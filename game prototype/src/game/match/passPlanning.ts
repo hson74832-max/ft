@@ -92,8 +92,14 @@ export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string
   for (let i = 0; i < 5; i++) {
     const travelTime = estimateKickTravelTime(distance, power, profile.loft, startHeight);
     arrivalTime = travelTime;
+    // The prediction — and therefore the strike power — must use the speed the
+    // receiver can actually reach. A runner sprinting into space covers more ground
+    // than the plan's nominal jog, so a pass aimed at his feet would arrive behind
+    // him; lead it with his sprint speed and weight the kick to match.
+    const runningNow = receiver.vel.length() > CONFIG.player.runSpeed;
     const receiverCap = receiver.role === "GK" ? CONFIG.player.runSpeed
-      : action === "pass_through" ? CONFIG.ai.maxSprint : assignment?.desiredSpeed ?? CONFIG.player.runSpeed;
+      : (action === "pass_through" || runningNow) ? CONFIG.ai.maxSprint
+        : assignment?.desiredSpeed ?? CONFIG.player.runSpeed;
     receiverTarget = predictReceiverRun(receiver.pos, receiver.vel, destination, travelTime, receiverCap);
     distance = Math.hypot(receiverTarget.x - origin.x, receiverTarget.z - origin.z);
     if (distance > maximumReach - 0.35) return null;
