@@ -4,6 +4,7 @@ import { FORMATIONS } from "../config";
 import { AnimationController } from "../anims";
 import { createPlayerMesh, generateVariant } from "../playerMesh";
 import { tieBreakHash } from "../random";
+import { createPerception } from "./perception";
 import type { MatchHost } from "./host";
 import type { EnginePlayer } from "./types";
 
@@ -42,6 +43,7 @@ export function buildPlayers(e: MatchHost) {
         callForBall: false, isHuman: false, stamina: 1,
         decisionReason: "init", utilities: {}, restartTaker: false,
         runSerial: 0, style: e.ai.sampleStyle(f.role, idx), attributes: e.ai.sampleAttributes(f.role, idx),
+        perception: createPerception(e.matchSeed, idx), faceTarget: null, faceTargetT: 0,
       });
     });
     startIdx += FORMATIONS[key].length;

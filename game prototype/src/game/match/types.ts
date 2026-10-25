@@ -6,6 +6,7 @@ import type { AnimationController } from "../anims";
 import type { PlayerRig } from "../playerMesh";
 import type { AIDecision, PlayerAttributes, PlayerStyle } from "../ai";
 import type { RunType, SupportJob } from "../tactics";
+import type { Perception } from "./perception";
 
 /** A tackle wind-up, frozen at action start so contact timing cannot be gamed. */
 export interface TackleChallenge {
@@ -35,6 +36,11 @@ export interface EnginePlayer {
   decisionReason: string; utilities: Record<string, number>;
   restartTaker: boolean;
   runSerial: number; style: PlayerStyle; attributes: PlayerAttributes;
+  /** Private field of view and short-term memory (see ./perception). */
+  perception: Perception;
+  /** Body orientation the player must reach before the queued kick can be struck. */
+  faceTarget: THREE.Vector3 | null;
+  faceTargetT: number;
   supportJob?: SupportJob;
   supportRun?: RunType;
   supportMode?: string;
@@ -84,4 +90,4 @@ export interface GkDistribution {
 }
 
 /** Sampled aim point for a restart delivery. */
-export interface RestartTarget { target: THREE.Vector3; player?: EnginePlayer; }
+export interface RestartTarget { target: THREE.Vector3; player?: EnginePlayer; action?: string; }

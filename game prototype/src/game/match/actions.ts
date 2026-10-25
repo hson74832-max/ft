@@ -3,9 +3,30 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { tieBreakHash } from "../random";
+import { yawDelta, yawOf } from "../angles";
 import { beginTackle, carrierIsProtected, isTackleAction, keeperHasBallInHands } from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
+
+/** Actions that strike the ball with the body: the departure direction is the body's. */
+export function isKickAction(action: string): boolean {
+  return action.startsWith("pass_") || action.startsWith("shoot_")
+    || action === "gk_punt" || action === "gk_roll";
+}
+
+/**
+ * How far (radians) the body has to turn before it faces `target`.
+ *
+ * A pass or a shot is struck by the body that faces it: a player whose shoulders
+ * point away from the target cannot kick the ball the other way, so the difference
+ * is exposed here and the caller turns the player first instead of animating an
+ * impossible, ball-one-way-body-the-other strike.
+ */
+export function kickFacingError(p: EnginePlayer, target: THREE.Vector3): number {
+  const dx = target.x - p.pos.x, dz = target.z - p.pos.z;
+  if (Math.hypot(dx, dz) < 0.35) return 0;
+  return Math.abs(yawDelta(p.facing, yawOf(dx, dz)));
+}
 
 /**
  * A stable, collision-resistant-enough action id for replay logs.

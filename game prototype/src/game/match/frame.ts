@@ -6,13 +6,14 @@ import { applyPose } from "../skeleton";
 import { WorldSnap } from "../ai";
 import { turnTowards, yawDelta, yawOfVector } from "../angles";
 import { _v1, _v2 } from "./scratch";
-import { startAction } from "./actions";
+import { isKickAction, startAction } from "./actions";
 import { aiControl, humanControl } from "./control";
 import { onContact } from "./contacts";
 import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
 import { restartAuto } from "./restarts";
 import { decayTackleTimers } from "./tackles";
+import { scanHeadYaw, updatePerception } from "./perception";
 import type { MatchHost } from "./host";
 
 /** The AI-facing view of the world, rebuilt once per frame. */
@@ -29,6 +30,7 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
       callForBall: p.callForBall, isHuman: p.isHuman, runSerial: p.runSerial, style: p.style, attributes: p.attributes,
       moveTarget: p.moveTarget.clone(), desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
       tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
+      perception: p.perception,
     })),
     time: e.clock, half: e.rules.half, matchSeed: e.matchSeed,
     ballKickAge: e.ball.kickAge,
@@ -75,9 +77,19 @@ export function beginAITrace(e: MatchHost) {
 
 /** Control branch, motion integration, animation and rig transform for every player. */
 export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boolean, frozen: boolean) {
+  // What each player can see and still remembers, refreshed from the body
+  // orientations the previous frame ended with: every decision below is made
+  // against that picture, not against the engine's ground truth (./perception).
+  updatePerception(e, dt);
   for (const p of e.players) {
     // Timers decay on every branch (human, AI, frozen and restart hold).
     decayTackleTimers(p, dt);
+    // A body-orientation request (turn before kicking) expires on its own so a
+    // cancelled decision cannot leave the player staring at an old target.
+    if (p.faceTarget) {
+      p.faceTargetT = Math.max(0, p.faceTargetT - dt);
+      if (p.faceTargetT <= 0) p.faceTarget = null;
+    }
     // Clear stale kick intents once the animation that owned them has finished.
     if (p.pendingKick && !p.anim.busy) p.pendingKick = null;
     if (p.tackleChallenge && p.anim.actionId !== p.tackleChallenge.action) p.tackleChallenge = null;
@@ -166,6 +178,11 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       // (he "faced the goal line") every time he retreated or side-stepped.
       _v1.copy(e.ball.pos).sub(p.pos);
       if (_v1.length() > 0.5) wantFacing = yawOfVector(_v1);
+    } else if (p.pendingKick && isKickAction(p.pendingKick.action)) {
+      // A kick is being wound up: the torso turns onto the ball's departure
+      // direction while the clip plays, so the strike is never "behind the back".
+      _v1.copy(p.pendingKick.target).sub(p.pos);
+      if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);
     } else if (p.speed > 0.4) wantFacing = yawOfVector(p.vel);
     else if (e.ball.possessedBy !== p.idx) {
       _v1.copy(e.ball.pos).sub(p.pos);
@@ -173,8 +190,14 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     } else if (p.pendingKick) {
       _v1.copy(p.pendingKick.target).sub(p.pos);
       wantFacing = yawOfVector(_v1);
+    } else if (p.faceTarget && p.speed < 2.0) {
+      // Turning the body onto a kick target before striking it: the pass leaves
+      // in the direction the shoulders point, never from behind the back.
+      _v1.copy(p.faceTarget).sub(p.pos);
+      if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);
     }
     const dYaw = yawDelta(p.facing, wantFacing);
+    if (p.faceTarget && p.speed < 2.0 && Math.abs(dYaw) < 0.25) p.faceTarget = null;
     // Turn-in-place: never for the carrier or keeper (its root yaw fought the facing
     // steering and produced the side-to-side spin), and never over a pending kick.
     const carrying = e.ball.possessedBy === p.idx;
@@ -198,7 +221,11 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     const dAng = yawDelta(p.facing, velAng);
     p.anim.jockey = !isHumanControlled && e.ball.ownerTeam !== p.team && e.ball.ownerTeam !== null && p.speed < 2.2;
     // Ball direction relative to the player's facing: drives the head-watch layer.
-    const ballLocal = yawDelta(p.facing, yawOfVector(_v1.copy(e.ball.pos).sub(p.pos)));
+    // While a scan is running the head sweeps the pitch instead of staring at the
+    // ball — that sweep is what widens the field of view in ./perception.
+    const scanYaw = scanHeadYaw(p.perception, e.clock);
+    const ballLocal = scanYaw !== 0 ? scanYaw
+      : yawDelta(p.facing, yawOfVector(_v1.copy(e.ball.pos).sub(p.pos)));
     const au = p.anim.update(dt, p.speed, dAng, { shielding: p.pendingKick !== null, ballDirLocal: ballLocal });
     // root motion add
     if (au.rootDelta.dx || au.rootDelta.dz || au.rootDelta.dYaw) {

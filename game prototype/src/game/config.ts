@@ -113,6 +113,21 @@ export const CONFIG = {
     gkNearPostBias: 0.28,      // m — protect the near post on wide balls
     gkNearPostInset: 0.18,     // m — do not stand outside the post
     passAimConeDegrees: 8,
+    // === PERCEPTION (vision / memory / scanning) ===
+    // The field of view is a cone around the body. Wide-angle vision is roughly
+    // 150–180° binocular (≈75–90° half-angle); peripheral awareness of a body
+    // right next to you needs no eye contact at all.
+    visionRange: 30,           // m — how far a player can resolve bodies
+    visionHalfAngle: 1.30,     // rad (~75°) half-angle of the resting field of view
+    scanHalfAngle: 2.35,       // rad (~135°) half-angle while the head is sweeping
+    awareRadius: 2.6,          // m — sensed without looking (proprioception / touch)
+    scanInterval: 2.4,         // s — mean time between two scans
+    scanDuration: 0.55,        // s — length of one sweep
+    scanHeadYaw: 1.2,          // rad — how far the head turns during a sweep
+    memorySeconds: 4.0,        // s — how long a sighting is remembered
+    // A kick is struck by the body that is facing it: the target must lie inside
+    // this arc, otherwise the player turns first (no passes "behind the back").
+    kickFacingAngle: 1.75,     // rad (~100°)
   },
   /**
    * Deterministic tackle duel. There is deliberately no random draw here: a
