@@ -208,10 +208,16 @@ export function outGoalCheck(e: MatchHost) {
     const lastT = touchTeam ?? 0;
     const team = 1 - lastT;
     // Throw from where the ball crossed the touchline, not from wherever it
-    // was first sampled outside (metres further along at pass pace).
+    // was first sampled outside (metres further along at pass pace). The crossing is
+    // interpolated on the ball's Z travel through the line: a ball moving exactly
+    // along X has no crossing this frame, and dividing by a zero Z step (or using the
+    // exit position as a fallback) put the throw-in metres away from the real exit.
     const touchPlane = Math.sign(b.z) * (Wd + R);
-    const crossX = Math.sign(prev.z) === Math.sign(b.z) && b.z !== prev.z
-      ? prev.x + (b.x - prev.x) * THREE.MathUtils.clamp((touchPlane - prev.z) / (b.z - prev.z), 0, 1) : b.x;
+    const dz = b.z - prev.z;
+    const crossedThisFrame = Math.abs(dz) > 1e-6 && Math.sign(prev.z) === Math.sign(b.z);
+    const crossX = crossedThisFrame
+      ? prev.x + (b.x - prev.x) * THREE.MathUtils.clamp((touchPlane - prev.z) / dz, 0, 1)
+      : prev.x;
     const cx = THREE.MathUtils.clamp(crossX, -L + 0.25, L - 0.25);
     const cz = (b.z > 0 ? 1 : -1) * (Wd - 0.25);
     e.outRestartCount++;

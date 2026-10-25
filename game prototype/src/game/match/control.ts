@@ -31,8 +31,12 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
       const pad = pads[g];
       if (!pad) continue;
       const dead = 0.15;
-      const gx = Math.abs(pad.axes[0] ?? 0) > dead ? (pad.axes[0] ?? 0) : 0;
-      const gy = Math.abs(pad.axes[1] ?? 0) > dead ? (pad.axes[1] ?? 0) : 0;
+      // A pad that disconnects mid-frame can surface with no `axes` array at all;
+      // indexing it threw out of the whole control step and stopped the match.
+      const axes = pad.axes;
+      if (!axes) continue;
+      const gx = Math.abs(axes[0] ?? 0) > dead ? (axes[0] ?? 0) : 0;
+      const gy = Math.abs(axes[1] ?? 0) > dead ? (axes[1] ?? 0) : 0;
       if (gx !== 0 || gy !== 0) { ix = gx; iz = gy; gamepadActive = true; break; }
     }
   }

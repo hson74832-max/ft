@@ -247,6 +247,15 @@ export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "m
 
 export function registerFieldMotionClip(clip: FieldMotionClip, opts: { slot?: string } = {}): void {
   if (ANIMATION_CATALOGUE.some((item) => item.id === clip.id)) throw new Error(`Clip ID '${clip.id}' already exists in the built-in catalogue`);
+  // The sampler maps a phase onto the clip with `time % duration`: a zero, negative or
+  // non-finite duration turns that into Infinity/NaN, no frame ever matches and the
+  // animation layer spins forever waiting for a pose. Reject the clip at the door.
+  if (!Number.isFinite(clip.duration) || clip.duration <= 0) {
+    throw new Error(`Clip '${clip.id}' has an invalid duration (${clip.duration})`);
+  }
+  if (!Number.isFinite(clip.meta.duration) || clip.meta.duration <= 0) {
+    throw new Error(`Clip '${clip.id}' has an invalid clip duration in its metadata (${clip.meta.duration})`);
+  }
   clips.set(clip.id, clip);
   registryVersion++;
   const slot = opts.slot ?? (clip.meta.tags.find((t) => t.startsWith("slot:"))?.slice(5));
