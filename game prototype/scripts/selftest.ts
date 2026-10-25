@@ -8,6 +8,7 @@ import { CONFIG } from "../src/game/config";
 import { stepBallPhysics, kickBall, kickPowerForRange, kickRangeForPower, dragCoefficientAt, type BallState } from "../src/game/ball";
 import { REAL_DATA } from "../src/game/config";
 import { passAimDot, passAimIsValid, predictReceiverPosition, resolveNamedReceiver } from "../src/game/passing";
+import { passProfile } from "../src/game/match/passPlanning";
 
 let failures = 0;
 function check(name: string, condition: boolean, detail = "") {
@@ -152,6 +153,29 @@ check("REAL_DATA sprint threshold 25.2 km/h", REAL_DATA.player.sprintThresholdKm
     const power = kickPowerForRange(distance, loft, CONFIG.player.kickPower.longPass, 0.6);
     const range = kickRangeForPower(power, loft);
     check(`pass power is distance-calibrated (${distance} m)`, power <= CONFIG.player.kickPower.longPass && range + 0.5 >= distance && range < distance + 4,
+      `power=${power.toFixed(1)} m/s range=${range.toFixed(1)} m`);
+  }
+}
+
+// Delivery profiles: a long ball has to out-range a short pass. At loft 0.06 the driven
+// 24 m/s pass left the ground just enough to bounce (each bounce costs 35% of the
+// horizontal speed) and carried 22.2 m — less than an 11 m/s short pass (27.8 m) and
+// short of the 27 m the pass scanner is willing to aim at, so every mid-range pass was
+// unreachable. Loft is the only free parameter; speed comes from REAL_DATA.
+{
+  const long = passProfile("pass_long")!;
+  const short = passProfile("pass_short")!;
+  const longRange = kickRangeForPower(CONFIG.player.kickPower.longPass, long.loft);
+  const shortRange = kickRangeForPower(CONFIG.player.kickPower.pass, short.loft);
+  check("a long pass out-ranges a short pass", longRange > shortRange + 2,
+    `long ${longRange.toFixed(1)} m vs short ${shortRange.toFixed(1)} m`);
+  check("a long pass reaches the whole pass-scan window (27 m)", longRange >= 27,
+    `max range ${longRange.toFixed(1)} m`);
+  // The AI only reaches for the long ball beyond 13 m; that is the band that must be exact.
+  for (const distance of [14, 18, 22, 26]) {
+    const power = kickPowerForRange(distance, long.loft, CONFIG.player.kickPower.longPass, long.minPower);
+    const range = kickRangeForPower(power, long.loft);
+    check(`long pass is power-calibrated to ${distance} m`, range + 0.5 >= distance && range < distance + 4,
       `power=${power.toFixed(1)} m/s range=${range.toFixed(1)} m`);
   }
 }

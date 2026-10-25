@@ -3,7 +3,7 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { tieBreakHash } from "../random";
-import { beginTackle, carrierIsProtected, isTackleAction } from "./tackles";
+import { beginTackle, carrierIsProtected, isTackleAction, keeperHasBallInHands } from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -34,7 +34,10 @@ export function startAction(
   // A challenge against a recently-won ball is rejected before the wind-up:
   // otherwise B can start a tackle during A's protection and simply wait for
   // the shield to expire before the contact frame.
-  if (isTackleAction(action) && (p.tackleRecoveryT > 0 || carrierIsProtected(e))) return false;
+  // A challenge is refused before the wind-up when the ball is not there to be won:
+  // a protected carrier, and a keeper holding the ball in his hands (a keeper may not
+  // be charged while he has the ball, and the ball is at 1.2 m, not at his feet).
+  if (isTackleAction(action) && (p.tackleRecoveryT > 0 || carrierIsProtected(e) || keeperHasBallInHands(e))) return false;
   if (!p.anim.requestAction(action)) return false;
 
   if (isTackleAction(action)) beginTackle(e, p, action);

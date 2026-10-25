@@ -104,6 +104,177 @@ async function main() {
     check("non-pressing outfielders drop into the central corridor", midCompact, rest.map((p) => `${p.role} ${p.moveTarget.x.toFixed(1)},${p.moveTarget.z.toFixed(1)}`).join(" · "));
   }
 
+  // ================= 3b. Defenders: never baited wide, always goal-side =================
+  {
+    const engine = makeEngine(12);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    const carrier = engine.players[4];                 // RED winger on the touchline
+    carrier.pos.set(8, 0, 10.5);
+    carrier.vel.set(2, 0, 1.5);
+    engine.ball.possess(carrier.idx, 0);
+    engine.ball.pos.set(8.4, CONFIG.ball.radius, 10.7);
+    // BLUE's nearest outfielder starts just behind him; the rest hold the middle.
+    engine.players[6].pos.set(7.2, 0, 10.2);
+    engine.players[7].pos.set(6, 0, 2);
+    engine.players[8].pos.set(4, 0, -3);
+    engine.players[9].pos.set(2, 0, 0);
+    engine.players[5].pos.set(18.5, 0, 0);
+    const goal = engine.ai.ownGoal(1, 1);              // BLUE's own goal is +X
+    const sign = engine.ai.attackSign(1, 1);
+    const ownU = (v: THREE.Vector3) => v.x * sign;     // smaller = closer to own goal
+    mute(); for (let i = 0; i < 3; i++) engine.step(1 / 60); unmute();
+    const presser = engine.players.filter((p) => p.team === 1 && p.role !== "GK")
+      .sort((a, b) => a.pos.distanceTo(carrier.pos) - b.pos.distanceTo(carrier.pos))[0];
+    check("pressing defender closes from the goal side (never ball-side of the carrier)",
+      ownU(engine.ball.pos) - ownU(presser.moveTarget) > 0.5,
+      `${presser.role} target x=${presser.moveTarget.x.toFixed(1)} ball x=${engine.ball.pos.x.toFixed(1)} goal x=${goal.x.toFixed(1)}`);
+    check("pressing defender is not dragged outside the touchline",
+      Math.abs(presser.moveTarget.z) <= CONFIG.pitch.width / 2,
+      `target z=${presser.moveTarget.z.toFixed(1)}`);
+    const others = engine.players.filter((p) => p.team === 1 && p.role !== "GK" && p.idx !== presser.idx);
+    check("the centre is still covered while the ball is wide",
+      others.some((p) => Math.abs(p.moveTarget.z) < 5),
+      others.map((p) => `${p.role} z=${p.moveTarget.z.toFixed(1)}`).join(" · "));
+    void goal;
+  }
+
+  // ================= 3c. Swarmed defender in his own box clears it =================
+  {
+    let clearances = 0;
+    const boxTargets: string[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      const engine = makeEngine(seed);
+      engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+      const carrier = engine.players[1];                // RED DEF in his own box
+      carrier.pos.set(-17, 0, 2);
+      engine.players[2].pos.set(-6, 0, -1);
+      engine.players[3].pos.set(0, 0, 5);
+      engine.players[4].pos.set(4, 0, -3);
+      // BLUE swarm around him AND in every short exit lane.
+      const spots: [number, number][] = [[-16.4, 1.2], [-16.0, 3.0], [-11.4, 0.75], [-12.4, 2.75], [-13.9, 1.25]];
+      engine.players.filter((p) => p.team === 1 && p.role !== "GK")
+        .forEach((p, i) => p.pos.set(spots[i % spots.length][0], 0, spots[i % spots.length][1]));
+      engine.players[5].pos.set(18, 0, 0);
+      engine.ball.possess(carrier.idx, 0);
+      engine.ball.pos.set(-16.5, CONFIG.ball.radius, 2);
+      mute(); engine.step(1 / 60); unmute();
+      if (/CLEARANCE/.test(carrier.decisionReason) && carrier.moveTarget.distanceTo(carrier.pos) < 0.2) clearances++;
+      boxTargets.push(carrier.decisionReason.slice(0, 22));
+    }
+    check("a defender surrounded in his own box chooses a clearance (not a short pass/dribble)",
+      clearances >= 15, `${clearances}/20 · ${boxTargets[0]}`);
+
+    // The clearance kick itself: no valid receiver planning, ball leaves long and upfield.
+    const engine = makeEngine(1);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    const def = engine.players[1];
+    def.pos.set(-17, 0, 2);
+    engine.players.filter((p) => p.team === 1 && p.role !== "GK").forEach((p, i) => p.pos.set(-14 + i, 0, i));
+    engine.ball.possess(def.idx, 0);
+    engine.ball.pos.set(-16.6, CONFIG.ball.radius, 2);
+    const { startAction } = await import("../src/game/match/actions");
+    const { onContact } = await import("../src/game/match/contacts");
+    const target = new THREE.Vector3(18, 0, -2);
+    const started = startAction(engine, def, "pass_long", target);
+    let kicked = false;
+    mute();
+    for (let i = 0; i < 120 && started; i++) {
+      engine.clock += 1 / 60;
+      const frame = def.anim.update(1 / 60, 0, 0);
+      if (frame.contact) { onContact(engine, def, frame.contact); kicked = true; break; }
+    }
+    unmute();
+    check("the clearance leaves the boot long (contact releases the ball away from own goal)",
+      kicked && engine.ball.possessedBy === null && engine.ball.speed > 15 && engine.ball.vel.x > 5,
+      `speed ${engine.ball.speed.toFixed(1)} vel.x ${engine.ball.vel.x.toFixed(1)}`);
+    engine.dispose();
+  }
+
+  // ================= 3d. Wide carrier has a box target to cross to =================
+  // The plan layer is exercised directly (no engine stepping): possession must not be
+  // lost to a pass before the runner assignment is read.
+  {
+    const { TeamTactics } = await import("../src/game/tactics");
+    const style = { directness: 1, width: 1, risk: 1, carry: 1, shooting: 1, pressing: 1, support: 1, creativity: 1, finesseSide: 1 as const };
+    const at = (idx: number, team: number, role: string, roleIdx: number, x: number, z: number) => ({
+      idx, team, role, roleIdx, pos: new THREE.Vector3(x, 0, z), vel: new THREE.Vector3(),
+      facing: 0, speed: 0, busy: false, uninterruptible: false, cooldowns: new Map<string, number>(),
+      stamina: 1, hasBall: idx === 3, callForBall: false, isHuman: false, runSerial: 0, style,
+    });
+    const players = [
+      at(0, 0, "GK", 0, -18, 0), at(1, 0, "DEF", 1, -4, -6), at(2, 0, "DEF", 2, -4, 6),
+      at(3, 0, "MID", 3, 11, 9), at(4, 0, "FWD", 4, 4, 0),
+      at(5, 1, "GK", 0, 19.5, 0), at(6, 1, "DEF", 1, 19.5, 3), at(7, 1, "DEF", 2, 19.5, -3),
+      at(8, 1, "MID", 3, 14, 0), at(9, 1, "FWD", 4, 6, 2),
+    ];
+    const plan = new TeamTactics().plan({
+      ballPos: new THREE.Vector3(11.4, CONFIG.ball.radius, 8.8), ballVel: new THREE.Vector3(),
+      ballOwner: 3, ballOwnerTeam: 0, players, time: 12, half: 1, matchSeed: 77,
+      ballKickAge: 3, ownerSince: 9,
+    }, 0);
+    // The cross target is the middle of the box (|z| small), not the half-space outside
+    // it: without it the runner only ever offered a wide channel ball, never a cross.
+    const boxMiddle = plan ? [...plan.assignments.values()].filter((a) =>
+      a.target.x > CONFIG.pitch.length / 2 - 5 && Math.abs(a.target.z) < 3.2) : [];
+    check("with the ball wide in the final third a runner attacks the middle of the box", boxMiddle.length >= 1,
+      plan ? [...plan.assignments.values()].map((a) => `${a.job}/${a.runType} ${a.target.x.toFixed(1)},${a.target.z.toFixed(1)}`).join(" · ") : "no plan");
+  }
+
+  // ================= 3e. Wide carrier delivers into an occupied box =================
+  // The reported defect: with the box occupied the carrier still played the square
+  // ball infield. The choice is read from the decision layer (no engine stepping, so a
+  // pass cannot be lost to play before the decision is inspected).
+  // Two cases: an open delivery lane, and a partially blocked one with the target man
+  // marked — the "even with the box occupied" half of the report. The second case only
+  // works because a cross is scored on its delivery, not on the receiver being free.
+  const crossCases: { label: string; spots: [number, number][] }[] = [
+    { label: "open delivery lane", spots: [[8.1, 8.2], [6, 4], [11.5, 11.2], [17.4, 3.6]] },
+    { label: "part-blocked delivery lane", spots: [[8.1, 8.2], [6, 4], [11.5, 5.5], [17.4, 3.6]] },
+  ];
+  for (const crossCase of crossCases) {
+    let deliveries = 0, cases = 0;
+    const samples: string[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      const engine = makeEngine(seed);
+      engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+      const carrier = engine.players[4];              // RED winger, wide right, final third
+      carrier.pos.set(9, 0, 9.5); carrier.vel.set(0, 0, 0); carrier.facing = -0.7;
+      const forward = engine.players[3];              // target man in the box
+      forward.pos.set(16.5, 0, 2.5); forward.vel.set(0, 0, 0);
+      engine.players[1].pos.set(-8, 0, 0);
+      engine.players[2].pos.set(2, 0, -3);
+      engine.players[0].pos.set(-18, 0, 0);
+      // BLUE: the infield lanes are shut, the box is occupied by a marker on the forward.
+      // A defender on the carrier's back (pressing, but not in the delivery lane), the
+      // infield lanes shut, and a marker on the forward in an occupied box.
+      const spots = crossCase.spots;
+      engine.players.filter((p) => p.team === 1 && p.role !== "GK")
+        .forEach((p, i) => p.pos.set(spots[i % spots.length][0], 0, spots[i % spots.length][1]));
+      engine.players[5].pos.set(19.5, 0, 0.4);
+      engine.ball.possess(carrier.idx, 0);
+      engine.ball.pos.set(9.3, CONFIG.ball.radius, 9.6);
+      engine.ball.vel.set(0, 0, 0);
+      const world = engine.players.map((p) => ({
+        idx: p.idx, team: p.team, role: p.role, roleIdx: p.roleIdx, pos: p.pos, vel: p.vel, facing: p.facing,
+        speed: 0, busy: false, uninterruptible: false, cooldowns: new Map<string, number>(), stamina: 1,
+        hasBall: engine.ball.possessedBy === p.idx, callForBall: false, isHuman: false, runSerial: 0, style: p.style,
+      }));
+      const ai = new AIController(new SeededRandom(seed), seed);
+      const decision = ai.think(world[4], 4, {
+        ballPos: engine.ball.pos, ballVel: engine.ball.vel, ballOwner: 4, ballOwnerTeam: 0,
+        players: world, time: 10, half: 1, matchSeed: seed, ballKickAge: 1,
+      }, 10);
+      cases++;
+      const target = decision.actionTarget;
+      const intoBox = !!target && target.x > CONFIG.pitch.length / 2 - 5.5 && Math.abs(target.z) < 6.2;
+      if ((decision.action === "pass_long" || decision.action === "pass_short" || decision.action === "pass_through") && intoBox) deliveries++;
+      else samples.push(`${decision.action ?? "carry"}→${target ? `${target.x.toFixed(1)},${target.z.toFixed(1)}` : "-"} (${decision.reason.slice(0, 36)}) [${(decision.passOptions ?? []).map((o) => `#${o.receiver} ${o.purpose} lane${o.lane.toFixed(2)} sp${o.space.toFixed(1)} g${o.gain.toFixed(1)} s${o.score.toFixed(2)}`).join(" | ")}]`);
+      engine.dispose();
+    }
+    check(`a wide carrier with the box occupied delivers the ball into the box (${crossCase.label})`,
+      deliveries >= 12, `${deliveries}/${cases}${samples.length ? " · misses: " + samples.slice(0, 2).join(" | ") : ""}`);
+  }
+
   // ================= 4. Corners: legal taker, lofted long delivery =================
   {
     const engine = makeEngine(21);

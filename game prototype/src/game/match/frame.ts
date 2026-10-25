@@ -155,7 +155,13 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
 
     // facing: toward velocity, or toward ball when idle/defending, or toward moveTarget when shielding
     let wantFacing = p.facing;
-    if (p.speed > 0.4) wantFacing = yawOfVector(p.vel);
+    if (p.role === "GK" && e.ball.possessedBy !== p.idx) {
+      // Keepers shuffle: the feet travel along the line, the shoulders and eyes stay
+      // open to the play. Facing the velocity turned the keeper's back to the pitch
+      // (he "faced the goal line") every time he retreated or side-stepped.
+      _v1.copy(e.ball.pos).sub(p.pos);
+      if (_v1.length() > 0.5) wantFacing = yawOfVector(_v1);
+    } else if (p.speed > 0.4) wantFacing = yawOfVector(p.vel);
     else if (e.ball.possessedBy !== p.idx) {
       _v1.copy(e.ball.pos).sub(p.pos);
       if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);

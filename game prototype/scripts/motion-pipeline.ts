@@ -176,8 +176,10 @@ for (let frame = 0; frame < 60 * 45; frame++) {
 check("the match animates from bound clips", usedActions.size >= 4, [...usedActions].join(", ") || "none");
 check("locomotion bands are in use", usedLocomotion.size >= 2, [...usedLocomotion].join(", "));
 check("players still reach running speed with generated cycles", maxSpeed > 5, `${maxSpeed.toFixed(1)} m/s`);
-check("the match kept progressing on generated animation", engine.tacticalStats.passes > 0 && engine.rules.live,
-  `${engine.tacticalStats.passes} passes`);
+// Fouls are whistled by default, so 45 s of frames can legitimately end in a SETUP
+// freeze. Progress means the ball was played and the match clock moved.
+check("the match kept progressing on generated animation", engine.tacticalStats.passes > 0 && engine.rules.time > 20,
+  `${engine.tacticalStats.passes} passes · ${engine.rules.time.toFixed(1)}s played`);
 engine.dispose();
 
 // ---- 8. the pack that ships with the game is current --------------------------
