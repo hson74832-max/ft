@@ -148,7 +148,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       if (quality.outcome === "foul") p.tackleRecoveryT = Math.max(p.tackleRecoveryT, 0.45);
 
       if (carrierIdx === null && quality.ballDist < tackleReach(action)
-        && quality.score >= CONFIG.tackle.spillScore) {
+        && quality.score >= CONFIG.tackle.spillScore
+        // Re-trap guard: the striker cannot instantly collect his own fresh kick —
+        // the ball is still glued at his feet, so a loose-ball claim right after a
+        // strike must not grant possession. A poor challenge falls through to a miss.
+        && !(p.idx === e.ball.kickedBy && e.ball.kickAge < 0.45)) {
         // Loose-ball challenge: a high-quality poke may still claim it, but a
         // poor challenge never turns into free possession.
         e.ball.possess(p.idx, p.team);
