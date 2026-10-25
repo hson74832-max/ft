@@ -2,17 +2,20 @@
 import * as THREE from "three";
 import { CONFIG, FORMATIONS, RuleEvent } from "./config";
 import { AnimationController, clipExists, getClip } from "./anims";
-import { getRegisteredMotionClips } from "./motion";
 import { createPlayerMesh, generateVariant, MeshFamily, PlayerRig } from "./playerMesh";
 import { Ball, estimateKickTravelTime, kickPowerForRange, kickRangeForPower } from "./ball";
 import { RulesEngine } from "./rules";
 import { AIController, PlayerStyle, WorldPlayer, WorldSnap, type PassFlight, type AIDecision } from "./ai";
 import { applyPose } from "./skeleton";
 import { createMatchSeed, SeededRandom, tieBreakHash } from "./random";
-import { FieldMotionClip, parseFieldMotionText, registerFieldMotionClip, validateFieldMotionAgainstSkeleton } from "./motion";
+import {
+  FieldMotionClip, getRegisteredMotionClips, parseFieldMotionText, registerFieldMotionClip,
+  validateFieldMotionAgainstSkeleton,
+} from "./motion";
 import { kickoffRestartViolation } from "./restartRules";
 import { passAimDot, passAimIsValid, predictReceiverRun, resolveNamedReceiver } from "./passing";
 import { onsideLimit, type RunType, type SupportJob } from "./tactics";
+import { turnTowards, yawDelta, yawOfVector } from "./angles";
 
 export interface EnginePlayer {
   idx: number; team: number; role: string; roleIdx: number;
@@ -604,17 +607,15 @@ export class MatchEngine {
 
       // facing: toward velocity, or toward ball when idle/defending, or toward moveTarget when shielding
       let wantFacing = p.facing;
-      if (p.speed > 0.4) wantFacing = Math.atan2(-p.vel.z, p.vel.x);
+      if (p.speed > 0.4) wantFacing = yawOfVector(p.vel);
       else if (this.ball.possessedBy !== p.idx) {
         _v1.copy(this.ball.pos).sub(p.pos);
-        if (_v1.length() > 0.3) wantFacing = Math.atan2(-_v1.z, _v1.x);
+        if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);
       } else if (p.pendingKick) {
         _v1.copy(p.pendingKick.target).sub(p.pos);
-        wantFacing = Math.atan2(-_v1.z, _v1.x);
+        wantFacing = yawOfVector(_v1);
       }
-      let dYaw = wantFacing - p.facing;
-      while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-      while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+      const dYaw = yawDelta(p.facing, wantFacing);
       // Turn-in-place: never for the carrier or keeper (its root yaw fought the facing
       // steering and produced the side-to-side spin), and never over a pending kick.
       const carrying = this.ball.possessedBy === p.idx;
@@ -625,24 +626,17 @@ export class MatchEngine {
         this.startAction(p, dYaw > 0 ? "turn_left" : "turn_right");
       }
       const rootTurning = p.anim.actionId === "turn_left" || p.anim.actionId === "turn_right" || p.anim.actionId === "turn_180";
-      if (!rootTurning) p.facing += THREE.MathUtils.clamp(dYaw, -CONFIG.player.turnRate * dt, CONFIG.player.turnRate * dt);
+      if (!rootTurning) p.facing = turnTowards(p.facing, wantFacing, CONFIG.player.turnRate * dt);
 
       // stamina
       p.stamina = THREE.MathUtils.clamp(p.stamina + dt * (p.speed > 6 ? -CONFIG.player.staminaDrain : CONFIG.player.staminaRegen), 0.2, 1);
 
       // anim update
-      const velAng = p.speed > 0.3 ? Math.atan2(-p.vel.z, p.vel.x) : p.facing;
-      let dAng = velAng - p.facing;
-      while (dAng > Math.PI) dAng -= Math.PI * 2;
-      while (dAng < -Math.PI) dAng += Math.PI * 2;
+      const velAng = p.speed > 0.3 ? yawOfVector(p.vel) : p.facing;
+      const dAng = yawDelta(p.facing, velAng);
       p.anim.jockey = !isHumanControlled && this.ball.ownerTeam !== p.team && this.ball.ownerTeam !== null && p.speed < 2.2;
-      const ballLocal = (() => {
-        _v1.copy(this.ball.pos).sub(p.pos);
-        let a = Math.atan2(-_v1.z, _v1.x) - p.facing;
-        while (a > Math.PI) a -= Math.PI * 2;
-        while (a < -Math.PI) a += Math.PI * 2;
-        return a;
-      })();
+      // Ball direction relative to the player's facing: drives the head-watch layer.
+      const ballLocal = yawDelta(p.facing, yawOfVector(_v1.copy(this.ball.pos).sub(p.pos)));
       const au = p.anim.update(dt, p.speed, dAng, { shielding: p.pendingKick !== null, ballDirLocal: ballLocal });
       // root motion add
       if (au.rootDelta.dx || au.rootDelta.dz || au.rootDelta.dYaw) {

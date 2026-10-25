@@ -1,14 +1,11 @@
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import assert from "node:assert/strict";
 import { MatchEngine } from "../src/game/engine";
 import { CONFIG } from "../src/game/config";
 import { attackDirection, groundDistance } from "../src/game/tactics";
 
-const ctx = new Proxy({}, { get: () => () => ({}), set: () => true });
-const canvas = () => ({ width: 800, height: 500, clientWidth: 800, clientHeight: 500, style: {}, getContext: () => ctx });
-Object.assign(globalThis, { document: { createElement: canvas }, window: { location: { search: "" }, addEventListener() {}, removeEventListener() {} }, devicePixelRatio: 1 });
-
 function simulate(seed: number) {
-  const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed, headless: true, spectator: true, debugAI: false });
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed, headless: true, spectator: true, debugAI: false });
   let samples = 0, covered = 0, plansWithCover = 0, runFrames = 0, planSamples = 0, inRange = 0;
   // Off-ball involvement: are players actually moving, and how many separate runs do
   // they commit to? A static web keeps both numbers near zero.
