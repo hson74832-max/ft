@@ -1,0 +1,280 @@
+// Regression harness for the 2026-10-25 gameplay reports:
+//  1. an on-target shot awarded as a corner/goal kick instead of a goal,
+//  2. keepers passive in 1v1s (never close the angle / use hands on a carrier),
+//  3. defenders panic-clearing with no immediate danger,
+//  4. AI repeating the same pass in a stable loop,
+//  5. corner taker not the player actually nearest the flag when the ball went out.
+// Runs the REAL engine headless plus direct AI decisions, like tactics-test.
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
+import * as THREE from "three";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail = "") {
+  console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
+  if (!cond) failures++;
+}
+
+async function main() {
+  const { MatchEngine } = await import("../src/game/engine");
+  const { AIController } = await import("../src/game/ai");
+  const { SeededRandom } = await import("../src/game/random");
+  const { CONFIG } = await import("../src/game/config");
+  const { startAction } = await import("../src/game/match/actions");
+  const { onContact } = await import("../src/game/match/contacts");
+  const quiet = console.log;
+  const mute = () => { console.log = () => {}; console.groupCollapsed = () => {}; console.table = () => {}; console.info = () => {}; console.warn = () => {}; console.groupEnd = () => {}; };
+  const unmute = () => { console.log = quiet; };
+  const makeEngine = (seed: number) => new MatchEngine(headlessEngineCanvas(), { seed, headless: true, spectator: true, debugAI: true });
+
+  const L = CONFIG.pitch.length / 2, R = CONFIG.ball.radius;
+
+  // ================= 1a. Fast shot must not tunnel past the net window =================
+  // At timeScale 2 a frame is 0.1 s of sim: a 32 m/s shot travels ~3 m per frame,
+  // clean over the old "inside the net volume" window (goalDepth + 0.4 = 1.6 m).
+  {
+    mute();
+    const engine = makeEngine(101);
+    engine.timeScale = 2;
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(-10, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
+    engine.ball.release();
+    engine.ball.pos.set(L - 0.3, R, 0);           // 0.3 m in front of the +X goal line
+    engine.ball.lastTouch = 4; engine.ball.lastTouchTeam = 0; // RED shot
+    engine.ball.kick(new THREE.Vector3(1, 0, 0), 32, 0.02);
+    engine.step(0.05);
+    unmute();
+    check("32 m/s shot at timeScale 2 is a GOAL, not a goal kick/corner",
+      engine.rules.phase === "GOAL" && engine.rules.score[0] === 1,
+      `phase=${engine.rules.phase} score=${engine.rules.score.join(":")} ballX=${engine.ball.pos.x.toFixed(2)}`);
+    engine.dispose();
+  }
+
+  // ================= 1b. Diagonal shot judged at the crossing point =================
+  // Crosses the line inside the post (z ≈ 1.33) but by the detection frame its
+  // lateral travel has carried it beyond the post line (z ≈ 1.6): still a goal.
+  {
+    mute();
+    const engine = makeEngine(102);
+    engine.timeScale = 2;
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(-10, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
+    engine.ball.release();
+    engine.ball.pos.set(L - 1.0, R, 1.0);
+    engine.ball.lastTouch = 4; engine.ball.lastTouchTeam = 0;
+    engine.ball.vel.set(20, 0, 6); engine.ball.spin.set(0, 0, 0);
+    engine.ball.kickedBy = 4; engine.ball.kickAge = 0;
+    engine.step(0.05);
+    unmute();
+    check("diagonal shot crossing inside the post is a GOAL even if it exits the post line behind goal",
+      engine.rules.phase === "GOAL",
+      `phase=${engine.rules.phase} ball=(${engine.ball.pos.x.toFixed(2)}, ${engine.ball.pos.z.toFixed(2)}) restart=${engine.rules.pendingRestart?.kind ?? "-"}`);
+    engine.dispose();
+  }
+
+  // ================= 1c. Shot heading wide of the post is NOT a goal =================
+  {
+    mute();
+    const engine = makeEngine(103);
+    engine.timeScale = 2;
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(-10, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
+    engine.ball.release();
+    engine.ball.pos.set(L - 1.0, R, 2.2);         // already wide of the post, crossing outside
+    engine.ball.lastTouch = 4; engine.ball.lastTouchTeam = 0;
+    engine.ball.vel.set(20, 0, 1); engine.ball.spin.set(0, 0, 0);
+    engine.ball.kickedBy = 4; engine.ball.kickAge = 0;
+    engine.step(0.05);
+    unmute();
+    check("shot crossing wide of the post is a goal kick, not a goal",
+      engine.rules.phase !== "GOAL" && engine.rules.pendingRestart?.kind === "goal_kick",
+      `phase=${engine.rules.phase} restart=${engine.rules.pendingRestart?.kind ?? "-"}`);
+    engine.dispose();
+  }
+
+  // Shared AI fixture builder (mirrors tactics-test's WorldPlayer shape).
+  const style = { directness: 1, width: 1, risk: 1, carry: 1, shooting: 1, pressing: 1, support: 1, creativity: 1, finesseSide: 1 as const };
+  const wp = (idx: number, team: number, role: string, roleIdx: number, x: number, z: number, vx = 0, vz = 0, hasBall = false) => ({
+    idx, team, role, roleIdx, pos: new THREE.Vector3(x, 0, z), vel: new THREE.Vector3(vx, 0, vz),
+    facing: team === 0 ? 0 : Math.PI, speed: Math.hypot(vx, vz), busy: false, uninterruptible: false,
+    cooldowns: new Map<string, number>(), stamina: 1, hasBall, callForBall: false, isHuman: false,
+    runSerial: 0, style: { ...style },
+  });
+
+  // ================= 2a. Keeper closes the angle in a 1v1 =================
+  // BLUE forward through on RED's goal (-X), 7 m out, no RED defender goal-side.
+  {
+    const players = [
+      wp(0, 0, "GK", 0, -18.4, 0),
+      wp(1, 0, "DEF", 1, -6, -8), wp(2, 0, "DEF", 2, -6, 8), wp(3, 0, "MID", 3, 0, 0), wp(4, 0, "FWD", 4, 10, 0),
+      wp(5, 1, "GK", 0, 18.4, 0), wp(6, 1, "DEF", 1, 6, -8), wp(7, 1, "DEF", 2, 6, 8), wp(8, 1, "MID", 3, 0, 5),
+      wp(9, 1, "FWD", 4, -13, 0.3, -5, 0, true),
+    ];
+    const ai = new AIController(new SeededRandom(7), 7);
+    const ballPos = new THREE.Vector3(-13.5, R, 0.3);
+    const dec = ai.think(players[0], 0, {
+      ballPos, ballVel: new THREE.Vector3(-5, 0, 0), ballOwner: 9, ballOwnerTeam: 1,
+      players, time: 10, half: 1, matchSeed: 7, ballKickAge: 1,
+    }, 10);
+    const advance = dec.moveTarget.x + L;   // metres in front of RED's goal line (-20)
+    check("1v1: keeper rushes off his line toward the carrier instead of holding the arc",
+      advance > 3.4 && dec.desiredSpeed >= 5,
+      `target=(${dec.moveTarget.x.toFixed(1)}, ${dec.moveTarget.z.toFixed(1)}) advance=${advance.toFixed(1)} speed=${dec.desiredSpeed.toFixed(1)} · ${dec.reason}`);
+  }
+
+  // ================= 2b. Keeper smothers with hands at the carrier's feet =================
+  // Engine-level: carrier through, keeper at his feet plays gk_catch; the contact
+  // frame must actually take the ball (previously: possessed ball = instant break).
+  {
+    mute();
+    const engine = makeEngine(104);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    const gk = engine.players[0];               // RED GK, own goal -X in half 1
+    const carrier = engine.players[9];          // BLUE FWD
+    for (const p of engine.players) if (p !== gk && p !== carrier) { p.pos.set(10, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
+    carrier.pos.set(-15.4, 0, 0); carrier.facing = Math.PI; carrier.vel.set(-4, 0, 0);
+    carrier.tackleProtectionT = 0;
+    gk.pos.set(-16.6, 0, 0); gk.facing = 0; gk.vel.set(0, 0, 0);
+    engine.ball.possess(carrier.idx, carrier.team);
+    engine.ball.pos.set(-15.9, R, 0);           // glued ball, exposed toward the keeper
+    const started = startAction(engine, gk, "gk_catch", engine.ball.pos.clone());
+    let contacted = false;
+    for (let i = 0; i < 90 && !contacted; i++) {
+      const dt = 1 / 60; engine.clock += dt;
+      const frame = gk.anim.update(dt, 0, 0);
+      if (frame.contact) { onContact(engine, gk, frame.contact); contacted = true; }
+    }
+    unmute();
+    check("1v1: gk_catch contact smothers an exposed possessed ball",
+      started && contacted && engine.ball.possessedBy === gk.idx,
+      `started=${started} contacted=${contacted} owner=${engine.ball.possessedBy}`);
+    engine.dispose();
+  }
+
+  // ================= 3. No panic clearance with a single static attacker =================
+  // RED defender 10 m from his own goal, ONE opponent 3 m away standing still,
+  // teammates marked (no "safe" outlet) but the lane ahead is wide open.
+  {
+    const players = [
+      wp(0, 0, "GK", 0, -18.4, 0),
+      wp(1, 0, "DEF", 1, -10, 0, 0, 0, true),          // carrier
+      wp(2, 0, "DEF", 2, -12, -7), wp(3, 0, "MID", 3, -4, 6), wp(4, 0, "FWD", 4, 6, -3),
+      wp(5, 1, "GK", 0, 18.4, 0),
+      wp(6, 1, "DEF", 1, -11.4, -7),                    // marker on #2 (0.6 m)
+      wp(7, 1, "DEF", 2, -3.4, 6),                      // marker on #3 (0.6 m)
+      wp(8, 1, "MID", 3, -14, 0.2),                     // stands in the back-pass lane to the GK
+      wp(9, 1, "FWD", 4, -7, 0.8),                      // single presser, 3.1 m away, static
+    ];
+    let clearances = 0, runs = 0;
+    const samples: string[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      const ai = new AIController(new SeededRandom(seed), seed);
+      const dec = ai.think(players[1], 1, {
+        ballPos: new THREE.Vector3(-9.5, R, 0), ballVel: new THREE.Vector3(),
+        ballOwner: 1, ballOwnerTeam: 0, players, time: 10, half: 1, matchSeed: seed, ballKickAge: 1,
+      }, 10);
+      runs++;
+      if (/CLEARANCE/.test(dec.reason)) { clearances++; samples.push(`seed${seed}: ${dec.reason}`); }
+    }
+    check("defender with one static attacker 3 m away and space ahead does NOT panic-clear",
+      clearances === 0, `${clearances}/${runs}${samples.length ? " · " + samples[0] : ""}`);
+  }
+
+  // ================= 3b. A real emergency still clears =================
+  // Same carrier, now inside his own box, two opponents closing fast, lane ahead shut.
+  {
+    const players = [
+      wp(0, 0, "GK", 0, -18.4, 0),
+      wp(1, 0, "DEF", 1, -16, 0, 0, 0, true),
+      wp(2, 0, "DEF", 2, -12, -7), wp(3, 0, "MID", 3, -4, 6), wp(4, 0, "FWD", 4, 6, -3),
+      wp(5, 1, "GK", 0, 18.4, 0),
+      wp(6, 1, "DEF", 1, -11.4, -7),
+      wp(7, 1, "DEF", 2, -3.4, 6),
+      wp(8, 1, "MID", 3, -13.8, -1.2, -5, 1),           // second presser closing, blocks the lane ahead
+      wp(9, 1, "FWD", 4, -14.2, 1.0, -5, -0.8),         // nearest presser closing
+    ];
+    let clearances = 0, runs = 0;
+    const samples: string[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      const ai = new AIController(new SeededRandom(seed), seed);
+      const dec = ai.think(players[1], 1, {
+        ballPos: new THREE.Vector3(-15.5, R, 0), ballVel: new THREE.Vector3(),
+        ballOwner: 1, ballOwnerTeam: 0, players, time: 10, half: 1, matchSeed: seed, ballKickAge: 1,
+      }, 10);
+      runs++;
+      if (/CLEARANCE/.test(dec.reason)) clearances++; else samples.push(`seed${seed}: ${dec.action ?? "carry"} ${dec.reason}`);
+    }
+    check("defender swarmed in his own box with no outlet and no escape lane still clears",
+      clearances >= runs * 0.8, `${clearances}/${runs}${samples.length ? " · " + samples[0] : ""}`);
+  }
+
+  // ================= 4. Repeated identical pass cannot stay the argmax forever =================
+  // Carrier with two open teammates. Commit "pass to #3" over and over (as a
+  // completed A->B->A->B cycle would): the repeat penalty must eventually move
+  // the choice off #3, and across seeds near-equal options must both be picked.
+  {
+    // Ring in the dribble lanes ahead + a presser behind: carrying is shut,
+    // both wide teammates are open. `marked` shades #4 so #3 wins by a clear
+    // margin (more than the capped novelty penalty can ever repay).
+    const makePlayers = (marked: boolean) => [
+      wp(0, 0, "GK", 0, -18.4, 0),
+      wp(1, 0, "DEF", 1, -12, -6), wp(2, 0, "DEF", 2, -2, 0, 0, 0, true),
+      wp(3, 0, "MID", 3, 3, -7), wp(4, 0, "FWD", 4, 3, 7),
+      wp(5, 1, "GK", 0, 18.4, 0),
+      wp(6, 1, "DEF", 1, 3, 0), wp(7, 1, "DEF", 2, 2.5, marked ? 4.5 : 2), wp(8, 1, "MID", 3, 2.5, -2), wp(9, 1, "FWD", 4, -4.5, 0),
+    ];
+    const players = makePlayers(false);
+    const snapFor = (seed: number, ps = players) => ({
+      ballPos: new THREE.Vector3(-1.5, R, 0), ballVel: new THREE.Vector3(),
+      ballOwner: 2, ballOwnerTeam: 0, players: ps, time: 10, half: 1 as const, matchSeed: seed, ballKickAge: 1,
+    });
+    // (a) streak: with #3 the clear best option, after straight committed
+    // passes to the same man the choice must still eventually move off him.
+    const streakPlayers = makePlayers(true);
+    const ai = new AIController(new SeededRandom(42), 42);
+    const first = ai.think(streakPlayers[2], 2, snapFor(42, streakPlayers), 10);
+    const firstTarget = first.passTo;
+    let broke = false;
+    if (firstTarget !== undefined) {
+      for (let i = 0; i < 6 && !broke; i++) {
+        ai.commitDecision(2, { ...first });
+        ai.nextThink.set(2, 0);
+        const next = ai.think(streakPlayers[2], 2, snapFor(42, streakPlayers), 10);
+        if (next.passTo !== firstTarget) broke = true;
+      }
+    }
+    check("passing to the same teammate repeatedly eventually stops being chosen",
+      firstTarget !== undefined && broke, `first passTo=${firstTarget} broke=${broke} (${first.reason})`);
+    // (b) probability: near-equal options are not a deterministic argmax across seeds.
+    const picks = new Set<number>();
+    for (let seed = 1; seed <= 40; seed++) {
+      const a = new AIController(new SeededRandom(seed), seed);
+      const d = a.think(players[2], 2, snapFor(seed), 10);
+      if (d.passTo !== undefined) picks.add(d.passTo);
+    }
+    check("near-equal pass options are sampled probabilistically across seeds",
+      picks.size >= 2, `receivers picked: ${[...picks].join(", ")}`);
+  }
+
+  // ================= 5. Corner taker = nearest to the flag when the ball went out =================
+  {
+    mute();
+    const engine = makeEngine(105);
+    // MID #3 is right at the corner flag; the FWD (formation-home nearest) is far away.
+    engine.players[3].pos.set(18.5, 0, 11.5);
+    engine.players[4].pos.set(-5, 0, 0);
+    engine.players[1].pos.set(-8, 0, -6);
+    engine.players[2].pos.set(-8, 0, 6);
+    engine.rules.startSetup("corner", [19.75, 12.25], 0);
+    engine.step(1 / 60);
+    unmute();
+    const taker = engine.players.find((p) => p.restartTaker);
+    check("corner taker is the outfielder nearest the flag at ball-out, not nearest formation home",
+      taker?.idx === 3, `taker=#${taker?.idx} ${taker?.role}`);
+    engine.dispose();
+  }
+
+  console.log(failures ? `\n${failures} FAILURE(S)` : "\nALL PASS");
+  process.exit(failures ? 1 : 0);
+}
+
+main().catch((err) => { console.error(err); process.exit(2); });

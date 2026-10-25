@@ -8,17 +8,14 @@ import type { MatchEngine } from "../game/engine";
 import { TeamBadge } from "./Badges";
 
 export type Panel = "design" | "contact" | "teams" | "controls" | "settings" | "motion" | "readme";
-type FamilyMode = "mixed" | "blocky" | "roundy";
 
 interface Props {
   panel: Panel;
   onClose: () => void;
-  family: FamilyMode;
-  onFamily: (family: FamilyMode) => void;
   engine: () => MatchEngine | null;
 }
 
-export function PanelModal({ panel, onClose, family, onFamily, engine }: Props) {
+export function PanelModal({ panel, onClose, engine }: Props) {
   const titles: Record<Panel, string> = {
     design: "Design / Architecture", contact: "Pose Contact Sheet", teams: "Team Selection", controls: "Controls",
     settings: "Settings & AI Tuning", motion: "Motion Lab", readme: "Rulebook & README",
@@ -34,7 +31,7 @@ export function PanelModal({ panel, onClose, family, onFamily, engine }: Props) 
           <button onClick={onClose} className="rounded-md border border-white/10 bg-white/5 p-2 text-zinc-400 hover:text-white"><X className="h-4 w-4" /></button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-5 text-[12px] leading-relaxed text-zinc-300">
-          {panel === "teams" && <Teams family={family} onFamily={onFamily} />}
+          {panel === "teams" && <Teams />}
           {panel === "controls" && <Controls />}
           {panel === "settings" && <Settings engine={engine} />}
           {panel === "motion" && <MotionLab engine={engine} />}
@@ -47,25 +44,14 @@ export function PanelModal({ panel, onClose, family, onFamily, engine }: Props) 
   );
 }
 
-function Teams({ family, onFamily }: { family: FamilyMode; onFamily: (f: FamilyMode) => void }) {
+function Teams() {
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-2">
         <TeamPanel team="home" name="Harbor City" code="HBC" role="Home · Red kit" desc="4-1 shape built around a creative midfielder and a pressing forward." />
         <TeamPanel team="away" name="Redwood Rangers" code="RWR" role="Away · Blue kit" desc="Compact block, quick transitions, keeper plays direct under pressure." />
       </div>
-      <div>
-        <SectionLabel>Mesh family</SectionLabel>
-        <div className="grid grid-cols-3 gap-2">
-          {(["mixed", "blocky", "roundy"] as FamilyMode[]).map((f) => (
-            <button key={f} onClick={() => onFamily(f)} className={`rounded-md border px-3 py-3 text-left ${family === f ? "border-[#c8f31d] bg-[#c8f31d]/10" : "border-white/10 bg-white/[0.03] hover:border-white/25"}`}>
-              <div className="font-display text-sm font-bold uppercase text-white">{f}</div>
-              <div className="text-[10px] text-zinc-500">{f === "mixed" ? "Alternating skins" : f === "blocky" ? "Cuboid limbs, flat shading" : "Capsule limbs, smooth normals"}</div>
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-[10px] text-zinc-500">Both families bind the same 21-bone skeleton; switching rebuilds the match with the same animation set.</p>
-      </div>
+      <p className="text-[10px] text-zinc-500">All players use the Blocky mesh on the shared 21-bone skeleton.</p>
       <div className="rounded-md border border-white/10 bg-white/[0.03] p-3">
         <SectionLabel>Formation · data-defined roles</SectionLabel>
         <div className="grid grid-cols-5 gap-1 text-center text-[10px]">
@@ -271,7 +257,7 @@ function MotionLab({ engine }: { engine: () => MatchEngine | null }) {
     frameEvents: [{ t, type: "ball_contact" }] } }`}</pre>
         <p className="mt-1 text-zinc-500">Every imported clip must resolve every skeleton bone. Ball contact events are read at the authored <span className="font-mono">contactFrame</span>; AI can only select the clip after it is registered.</p>
       </div>
-      <div className="flex items-center gap-2 text-[10px] text-zinc-500"><Download className="h-3.5 w-3.5" /> Motion is sampled on the shared 21-bone rig — both Blocky and Roundy skins play the same clip.</div>
+      <div className="flex items-center gap-2 text-[10px] text-zinc-500"><Download className="h-3.5 w-3.5" /> Motion is sampled on the shared 21-bone rig — every Blocky skin plays the same clip.</div>
     </div>
   );
 }
@@ -280,7 +266,7 @@ function Design() {
   return (
     <div className="space-y-4">
       <Block t="Skeleton contract · 21 bones">
-        <p>Metres, Y-up, +Z forward. Both mesh families bind identical bone offsets, so retargeting is lossless by construction. Automated validation checks all clips × all variants.</p>
+        <p>Metres, Y-up, +Z forward. The Blocky mesh binds the canonical bone offsets, so retargeting is lossless by construction. Automated validation checks all clips × all variants.</p>
         <div className="mt-1 rounded bg-black/50 p-2 font-mono text-[10px] text-[#c8f31d]">{SKELETON_CONTRACT.bones.map((b) => b.name).join(" · ")}</div>
       </Block>
       <Block t="State machines">
@@ -308,7 +294,7 @@ function ContactSheet() {
   const rows = poseStressTest();
   return (
     <div>
-      <p className="mb-2 text-[11px] text-zinc-400">Analytic limb clearance at extreme poses (pass &gt; 0.030 m). Guards shoulder/hip pinch and self-intersection on both mesh families.</p>
+      <p className="mb-2 text-[11px] text-zinc-400">Analytic limb clearance at extreme poses (pass &gt; 0.030 m). Guards shoulder/hip pinch and self-intersection on the Blocky mesh.</p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {rows.map((r, i) => (
           <div key={i} className="rounded border border-white/10 bg-white/[0.03] p-2">

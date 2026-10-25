@@ -4,8 +4,6 @@ import { MenuScreen, type MenuPanel } from "./ui/MenuScreen";
 import { MatchScreen } from "./ui/MatchScreen";
 import { PanelModal } from "./ui/Modals";
 
-type FamilyMode = "mixed" | "blocky" | "roundy";
-
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<MatchEngine | null>(null);
@@ -13,7 +11,6 @@ export default function App() {
   const [screen, setScreen] = useState<"menu" | "match">("menu");
   const [mode, setMode] = useState<"play" | "spectate">("play");
   const [session, setSession] = useState(0);
-  const [family, setFamily] = useState<FamilyMode>("mixed");
   const [panel, setPanel] = useState<MenuPanel | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [paused, setPaused] = useState(false);
@@ -51,7 +48,7 @@ export default function App() {
 
   useEffect(() => {
     if (screen !== "match" || !canvasRef.current) return;
-    const eng = new MatchEngine(canvasRef.current, { family, spectator: mode === "spectate" });
+    const eng = new MatchEngine(canvasRef.current, { spectator: mode === "spectate" });
     engineRef.current = eng;
     let raf = 0;
     let last = performance.now();
@@ -77,7 +74,7 @@ export default function App() {
       eng.dispose();
       engineRef.current = null;
     };
-  }, [screen, session, family, mode]);
+  }, [screen, session, mode]);
 
   useEffect(() => {
     if (screen !== "menu") return;
@@ -112,8 +109,6 @@ export default function App() {
           <PanelModal
             panel={panel}
             onClose={() => setPanel(null)}
-            family={family}
-            onFamily={(next) => { setFamily(next); }}
             engine={() => engineRef.current}
           />
         )}

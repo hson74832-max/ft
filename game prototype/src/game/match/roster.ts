@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { FORMATIONS } from "../config";
 import { AnimationController } from "../anims";
-import { MeshFamily, createPlayerMesh, generateVariant } from "../playerMesh";
+import { createPlayerMesh, generateVariant } from "../playerMesh";
 import { tieBreakHash } from "../random";
 import type { MatchHost } from "./host";
 import type { EnginePlayer } from "./types";
@@ -25,8 +25,7 @@ export function buildPlayers(e: MatchHost) {
     const key = team === 0 ? "RED" : "BLUE";
     FORMATIONS[key].forEach((f, i) => {
       const idx = startIdx + i;
-      const fam: MeshFamily = e.familyMode === "mixed" ? (idx % 2 === 0 ? "Blocky" : "Roundy") : e.familyMode === "blocky" ? "Blocky" : "Roundy";
-      const variant = generateVariant(e.matchSeed + team * 77, team, f.role, fam, i);
+      const variant = generateVariant(e.matchSeed + team * 77, team, f.role, i);
       const rig = createPlayerMesh(variant);
       const anim = new AnimationController();
       // Visual phase is derived, not drawn from the match PRNG: animation
@@ -42,7 +41,7 @@ export function buildPlayers(e: MatchHost) {
         tackleRecoveryT: 0, tackleProtectionT: 0, tackleChallenge: null,
         callForBall: false, isHuman: false, stamina: 1,
         decisionReason: "init", utilities: {}, restartTaker: false,
-        runSerial: 0, style: e.ai.sampleStyle(f.role),
+        runSerial: 0, style: e.ai.sampleStyle(f.role, idx),
       });
     });
     startIdx += FORMATIONS[key].length;

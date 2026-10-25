@@ -45,11 +45,15 @@ export interface SupportAssignment {
   beyondLine: boolean;
 }
 
+/** Per-team mentality for the match: how direct and how hard the side presses. */
+export interface TeamStyle { directness: number; pressing: number; }
+
 export interface AttackPlan {
   team: number;
   carrier: number;
   half: 1 | 2;
   phase: AttackPhase;
+  teamStyle: TeamStyle;
   at: number;
   anchor: THREE.Vector3;
   offsideLine: number;
@@ -155,6 +159,18 @@ export class TeamTactics {
 
   reset() { this.plans.clear(); this.runs.clear(); }
   current(team: number) { return this.plans.get(team); }
+
+  /**
+   * The side's mentality for this match, hashed (not drawn) from the match
+   * seed: the seed flavours how each team plays — direct vs patient, hard
+   * press vs mid-block — while individual decisions stay with the players.
+   */
+  teamStyle(team: number, matchSeed: number): TeamStyle {
+    return {
+      directness: 0.85 + tieBreakHash(matchSeed, team, 0, "team-directness") * 0.3,
+      pressing: 0.85 + tieBreakHash(matchSeed, team, 0, "team-pressing") * 0.3,
+    };
+  }
 
   plan(snap: WorldSnap, team: number): AttackPlan | null {
     const flight = snap.passFlight;
@@ -430,7 +446,7 @@ export class TeamTactics {
       }))));
     }
     if (!assignments.size) return null;
-    const plan: AttackPlan = { team, carrier: carrier.idx, half: snap.half, phase, at: snap.time, anchor, offsideLine: line, trigger, assignments };
+    const plan: AttackPlan = { team, carrier: carrier.idx, half: snap.half, phase, teamStyle: this.teamStyle(team, snap.matchSeed), at: snap.time, anchor, offsideLine: line, trigger, assignments };
     this.plans.set(team, plan);
     // Forget runs that have expired or are no longer assigned.
     for (const key of [...this.runs.keys()]) {

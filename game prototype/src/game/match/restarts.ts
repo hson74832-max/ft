@@ -9,6 +9,7 @@ import { kickoffRestartViolation } from "../restartRules";
 import { _v1 } from "./scratch";
 import { startAction } from "./actions";
 import { aiEvent } from "./debug";
+import { keeperPositionTarget } from "../ai";
 import { evaluateGkDistribution } from "./passPlanning";
 import { resetTackleState } from "./tackles";
 import type { EnginePlayer, GkDistribution, RestartTarget } from "./types";
@@ -111,21 +112,11 @@ export function placeForRestart(e: MatchHost) {
   else {
     e.ball.pos.set(pr.pos[0], CONFIG.ball.radius, pr.pos[1]);
     e.ball.vel.set(0, 0, 0); e.ball.release();
-    for (const p of e.players) {
-      const [hx, hz] = FORMATIONS[p.team === 0 ? "RED" : "BLUE"][p.roleIdx].home;
-      p.pos.set(hx * (e.rules.half === 2 ? -1 : 1), 0, hz);
-      p.vel.set(0, 0, 0);
-      p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
-      p.holdT = 0; p.stumbleT = 0;
-      resetTackleState(p);
-      p.decisionReason = "restart setup"; p.utilities = {};
-      p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
-      p.passOptions = undefined;
-      p.runSerial = 0;
-      p.desiredSpeed = 0; p.moveTarget.copy(p.pos);
-      p.anim = new AnimationController();
-      p.anim.locoPhase = tieBreakHash(e.matchSeed, p.idx, pr.id, "restart-loco") * Math.PI * 2;
-    }
+    // Choose the taker from where players actually are when the ball goes
+    // out — the man who chased it to the flag takes the corner, like the
+    // nearest man takes a throw-in. Ranking after the formation reset below
+    // measured distance from *home* positions, so the same forward was
+    // teleported in as taker no matter who was at the flag.
     const sign = e.ai.attackSign(pr.team, e.rules.half);
     const takers = e.players.filter((p) => p.team === pr.team && (pr.kind === "goal_kick" ? p.role === "GK" : p.role !== "GK"));
     // Kickoffs never reach this branch — resetPositions stages their taker.
@@ -144,6 +135,21 @@ export function placeForRestart(e: MatchHost) {
       return ranked[0] ?? null;
     };
     const taker = selectTaker();
+    for (const p of e.players) {
+      const [hx, hz] = FORMATIONS[p.team === 0 ? "RED" : "BLUE"][p.roleIdx].home;
+      p.pos.set(hx * (e.rules.half === 2 ? -1 : 1), 0, hz);
+      p.vel.set(0, 0, 0);
+      p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
+      p.holdT = 0; p.stumbleT = 0;
+      resetTackleState(p);
+      p.decisionReason = "restart setup"; p.utilities = {};
+      p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
+      p.passOptions = undefined;
+      p.runSerial = 0;
+      p.desiredSpeed = 0; p.moveTarget.copy(p.pos);
+      p.anim = new AnimationController();
+      p.anim.locoPhase = tieBreakHash(e.matchSeed, p.idx, pr.id, "restart-loco") * Math.PI * 2;
+    }
     if (taker) {
       if (pr.kind === "throw_in") {
         taker.pos.set(pr.pos[0], 0, Math.sign(pr.pos[1]) * (CONFIG.pitch.width / 2 - 0.18));
@@ -188,6 +194,16 @@ export function placeForRestart(e: MatchHost) {
           p.pos.set(goalSide.x, 0, goalSide.z);
           p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0);
         });
+        // The defending keeper sets on his angle arc for the delivery (near-post
+        // side for the flag), not on the formation home in the centre of goal.
+        const defendingGk = e.players.find((p) => p.team !== pr.team && p.role === "GK");
+        if (defendingGk) {
+          const gkSpot = keeperPositionTarget(e.ball.pos,
+            e.ai.ownGoal(defendingGk.team, e.rules.half),
+            e.ai.attackSign(defendingGk.team, e.rules.half));
+          defendingGk.pos.copy(gkSpot.target);
+          defendingGk.moveTarget.copy(defendingGk.pos); defendingGk.vel.set(0, 0, 0);
+        }
       }
       if (pr.kind === "goal_kick") {
         // Create genuine short and long options rather than one central punt:

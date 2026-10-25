@@ -256,7 +256,7 @@ export const REAL_DATA = {
 
 // ------------------------------------------------------------
 // SKELETON CONTRACT (canonical humanoid, metres, Y-up, +Z fwd)
-// Bone names are normative. Both mesh families bind losslessly.
+// Bone names are normative. The Blocky mesh binds losslessly.
 // Rest pose: T-pose-ish relaxed (arms ~12° down), feet flat.
 // ------------------------------------------------------------
 export const SKELETON_CONTRACT = {

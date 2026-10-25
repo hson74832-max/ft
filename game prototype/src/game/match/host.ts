@@ -14,7 +14,7 @@ import type { AIController, PassFlight, WorldSnap } from "../ai";
 import type { SeededRandom } from "../random";
 import type { MatchRenderer } from "./world";
 import type {
-  ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, FamilyMode, PassTrace,
+  ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, PassTrace,
 } from "./types";
 
 export interface TacticalStats {
@@ -51,7 +51,6 @@ export interface MatchHost {
   selectedIdx: number;
   spectator: boolean;
   cameraMode: CameraMode;
-  familyMode: FamilyMode;
   timeScale: number;
   aimRaw: boolean;
   showAIDebug: boolean;
