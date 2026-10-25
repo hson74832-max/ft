@@ -18,7 +18,9 @@ export function receiverOffsideAtKick(e: MatchHost, passer: EnginePlayer, receiv
   if (u <= 0) return false;
   const defenders = e.players.filter((p) => p.team !== passer.team)
     .map((p) => p.pos.x * attack).sort((a, b) => b - a);
-  const secondLast = defenders[1] ?? -CONFIG.pitch.length / 2;
+  // With fewer than two opponents there is no second-last defender to judge
+  // against, so no offside position can exist (default beyond the pitch).
+  const secondLast = defenders[1] ?? CONFIG.pitch.length / 2;
   return u > e.ball.pos.x * attack + CONFIG.ai.offsideBuffer
     && u > secondLast + CONFIG.ai.offsideBuffer;
 }
@@ -30,8 +32,10 @@ export function captureOffsideAtKick(e: MatchHost, passer: EnginePlayer, restart
   e.offsideTeam = null;
   if (!CONFIG.ai.offside || exempt) return;
   const attack = e.ai.attackSign(passer.team, e.rules.half);
+  // With fewer than two opponents there is no second-last defender, so no
+  // offside position can exist (default beyond the pitch).
   const secondLast = e.players.filter((p) => p.team !== passer.team)
-    .map((p) => p.pos.x * attack).sort((a, b) => b - a)[1] ?? -CONFIG.pitch.length / 2;
+    .map((p) => p.pos.x * attack).sort((a, b) => b - a)[1] ?? CONFIG.pitch.length / 2;
   const ballU = e.ball.pos.x * attack;
   for (const player of e.players) {
     if (player.team !== passer.team || player.idx === passer.idx || player.role === "GK") continue;

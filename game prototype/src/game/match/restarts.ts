@@ -18,13 +18,18 @@ export function resetPositions(e: MatchHost, kind: string) {
   e.ai.tactics.reset();
   e.passFlight = undefined; e.lastPass = undefined; e.frameWorld = null;
   e.ball.handsRestrictedTeam = null;
+  e.offsideCandidates.clear(); e.offsideTeam = null;
   const halfFlip = e.rules.half === 2 ? -1 : 1;
   for (const p of e.players) {
     const [hx, hz] = FORMATIONS[p.team === 0 ? "RED" : "BLUE"][p.roleIdx].home;
     p.pos.set(hx * halfFlip, 0, hz); p.vel.set(0, 0, 0);
     p.moveTarget.copy(p.pos);
     p.facing = e.ai.attackSign(p.team, e.rules.half) > 0 ? 0 : Math.PI;
-    p.pendingKick = null; p.restartTaker = false; p.holdT = 0; p.stumbleT = 0;
+    p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
+    p.holdT = 0; p.stumbleT = 0; p.celebrateT = 0;
+    p.decisionReason = "reset"; p.utilities = {};
+    p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
+    p.passOptions = undefined;
     p.runSerial = 0; p.lastActionSeed = null;
     p.anim = new AnimationController();
     p.anim.locoPhase = e.rng.range(0, Math.PI * 2);
@@ -66,6 +71,10 @@ export function resetPositions(e: MatchHost, kind: string) {
     kicker.restartTaker = true;
     e.ball.possess(kicker.idx, kickTeam);
   }
+  // A manual mid-match reset (or a kickoff re-stage) must not leave restart
+  // bookkeeping dangling behind a setup that no longer exists.
+  e.restartStartedId = -1; e.restartLaunchedId = -1; e.restartRetries = 0; e.restartContactT = 0;
+  if (e.rules.pendingRestart && e.rules.pendingRestart.kind !== "kickoff") e.rules.pendingRestart = null;
   e.restartAutoT = 0.6;
   e.ai.nextThink.clear();
   e.ai.lastDecision.clear();
@@ -77,6 +86,9 @@ export function placeForRestart(e: MatchHost) {
   if (!pr) return;
   e.ai.tactics.reset(); e.passFlight = undefined; e.frameWorld = null;
   e.ball.handsRestrictedTeam = null;
+  // A stale offside snapshot from the move that led to the restart must not
+  // survive into the restart setup (captureOffsideAtKick re-snaps at the kick).
+  e.offsideCandidates.clear(); e.offsideTeam = null;
   if (pr.kind === "kickoff") resetPositions(e, "kickoff");
   else {
     e.ball.pos.set(pr.pos[0], CONFIG.ball.radius, pr.pos[1]);
@@ -84,7 +96,14 @@ export function placeForRestart(e: MatchHost) {
     for (const p of e.players) {
       const [hx, hz] = FORMATIONS[p.team === 0 ? "RED" : "BLUE"][p.roleIdx].home;
       p.pos.set(hx * (e.rules.half === 2 ? -1 : 1), 0, hz);
-      p.vel.set(0, 0, 0); p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
+      p.vel.set(0, 0, 0);
+      p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
+      p.holdT = 0; p.stumbleT = 0; p.celebrateT = 0;
+      p.decisionReason = "restart setup"; p.utilities = {};
+      p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
+      p.passOptions = undefined;
+      p.lastActionSeed = null; p.runSerial = 0;
+      p.desiredSpeed = 0; p.moveTarget.copy(p.pos);
       p.anim = new AnimationController();
     }
     const sign = e.ai.attackSign(pr.team, e.rules.half);
@@ -353,24 +372,26 @@ export function restartAuto(e: MatchHost, dt: number) {
     }
     return;
   }
-  const selection = sampleRestartTarget(e, pr, taker);
   let action = "pass_short";
   if (pr.kind === "throw_in") action = "throw_in";
   else if (pr.kind === "corner") action = "corner_kick";
   else if (pr.kind === "penalty") action = "shoot_normal";
   else if (pr.kind === "free_kick") action = taker.pos.distanceTo(e.ai.goalPos(taker.team, e.rules.half)) < 13 ? "shoot_normal" : "pass_long";
   else if (pr.kind === "kickoff") action = "pass_short";
-  // Goal kick: choose short/long from measured space and lane clearance, never distance alone.
+  let selection: RestartTarget | null = null;
   let goalKickChoice: GkDistribution | null = null;
+  // Goal-kick distribution overrides the sampled target: only sample a restart
+  // target when it will actually be used, otherwise the RNG stream is burned
+  // for a choice that is thrown away (and every later AI draw shifts).
   if (pr.kind === "goal_kick") {
     goalKickChoice = evaluateGkDistribution(e, taker);
     if (goalKickChoice) {
       action = goalKickChoice.action;
-      selection.target.copy(goalKickChoice.target);
-      selection.player = goalKickChoice.receiver;
+      selection = { target: goalKickChoice.target.clone(), player: goalKickChoice.receiver };
       aiEvent(e, goalKickChoice.reason);
     }
   }
+  if (!selection) selection = sampleRestartTarget(e, pr, taker);
   const seed = e.rng.nextUint();
   if (startAction(e, taker, action, selection.target, selection.player?.idx, seed)) {
     e.restartStartedId = pr.id;
@@ -380,5 +401,36 @@ export function restartAuto(e: MatchHost, dt: number) {
     } else {
       e.rules.whistle(`${pr.kind.replace("_", " ")} taken`);
     }
-  } else e.restartAutoT = 0.15;
+  } else if ((taker.anim.cooldowns.get(action) ?? 0) > 0) {
+    // On cooldown: retries will self-heal as the cooldown decays.
+    e.restartAutoT = 0.15;
+  } else {
+    // startAction failed for no transient reason (all restart clips exist and the
+    // taker is not busy). Without startAction succeeding, restartStartedId is
+    // never set, the contact watchdog can never arm, and the restart would stay
+    // pending forever — release it to the taker instead.
+    e.restartLaunchedId = pr.id;
+    e.rules.pendingRestart = null;
+    releaseRestartToTaker(e, taker);
+  }
+}
+
+/** Release a stalled restart to its taker in play, after failed deliveries or a
+ * permanent startAction failure. The taker keeps its legally staged position:
+ * throw-in and corner takers stand outside the touchline, so they are bounded
+ * only by the buffer margin, never clamped back onto the pitch. */
+export function releaseRestartToTaker(e: MatchHost, p: EnginePlayer) {
+  p.pendingKick = null;
+  p.restartTaker = false;
+  p.moveTarget.copy(p.pos);
+  p.desiredSpeed = 0;
+  const halfX = CONFIG.pitch.length / 2 - 0.4, halfZ = CONFIG.pitch.width / 2 - 0.4;
+  const margin = CONFIG.pitch.buffer + 0.4;
+  const inX = THREE.MathUtils.clamp(p.pos.x, -halfX - margin, halfX + margin);
+  const inZ = THREE.MathUtils.clamp(p.pos.z, -halfZ - margin, halfZ + margin);
+  p.pos.set(inX, 0, inZ);
+  e.ball.pos.set(inX, CONFIG.ball.radius, inZ);
+  e.ball.vel.set(0, 0, 0);
+  e.ball.possess(p.idx, p.team);
+  aiEvent(e, `RESTART released to taker #${p.idx} after failed deliveries`);
 }

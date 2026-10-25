@@ -32,8 +32,14 @@ export function resolvePlayerCollisions(e: MatchHost) {
         b.vel.x += nx * closing * 0.6; b.vel.z += nz * closing * 0.6;
       }
       const halfX = CONFIG.pitch.length / 2 - 0.4, halfZ = CONFIG.pitch.width / 2 - 0.4;
-      a.pos.x = THREE.MathUtils.clamp(a.pos.x, -halfX, halfX); a.pos.z = THREE.MathUtils.clamp(a.pos.z, -halfZ, halfZ);
-      b.pos.x = THREE.MathUtils.clamp(b.pos.x, -halfX, halfX); b.pos.z = THREE.MathUtils.clamp(b.pos.z, -halfZ, halfZ);
+      // A restart taker may lawfully stand in the buffer outside the touchline
+      // (throw-in) or behind the corner flag (corner): never clamp them back
+      // onto the pitch here — stepPlayers already gave them the buffer margin.
+      const margin = (p: EnginePlayer) => (p.restartTaker ? CONFIG.pitch.buffer + 0.4 : 0);
+      a.pos.x = THREE.MathUtils.clamp(a.pos.x, -halfX - margin(a), halfX + margin(a));
+      a.pos.z = THREE.MathUtils.clamp(a.pos.z, -halfZ - margin(a), halfZ + margin(a));
+      b.pos.x = THREE.MathUtils.clamp(b.pos.x, -halfX - margin(b), halfX + margin(b));
+      b.pos.z = THREE.MathUtils.clamp(b.pos.z, -halfZ - margin(b), halfZ + margin(b));
       a.rig.group.position.x = a.pos.x; a.rig.group.position.z = a.pos.z;
       b.rig.group.position.x = b.pos.x; b.rig.group.position.z = b.pos.z;
     }

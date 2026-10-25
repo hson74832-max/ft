@@ -38,6 +38,9 @@ export function buildPlayers(e: MatchHost) {
  * opponent's outfielders).
  */
 export function setHumanPlayer(e: MatchHost, p: import("./types").EnginePlayer) {
+  // Spectator mode has no human player: possession changes must not move the
+  // human slot around (humanControl is already gated on !spectator).
+  if (e.spectator) return;
   if (p.team !== e.humanTeam || p.role === "GK") return;
   const current = e.players[e.humanIdx];
   if (current && current.idx !== p.idx) current.isHuman = false;
@@ -48,6 +51,7 @@ export function setHumanPlayer(e: MatchHost, p: import("./types").EnginePlayer) 
 
 /** Pass the human slot to the nearest outfielder to the ball. */
 export function switchToNearest(e: MatchHost, manual = false) {
+  if (e.spectator) return;
   const mates = e.players.filter((p) => p.team === e.humanTeam && p.role !== "GK");
   const best = [...mates].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos))[0];
   if (best && best.idx !== e.humanIdx) {

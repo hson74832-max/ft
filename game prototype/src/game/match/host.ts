@@ -100,7 +100,6 @@ export interface MatchHost {
   possessionStartedAt: number;
   transitionTeam: number | null;
   transitionUntil: number;
-  possessionTicks: { idx: number; team: number | null }[];
 
   // --- restarts -------------------------------------------------------------
   restartAutoT: number;

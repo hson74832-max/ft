@@ -59,7 +59,12 @@ export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string
   const origin = e.ball.pos.clone();
   const assignment = !restartKind && e.frameWorld
     ? e.ai.tactics.plan(e.frameWorld, passer.team)?.assignments.get(receiver.idx) : undefined;
-  const destination = restartKind ? receiver.pos.clone()
+  // For a restart the delivery was already aimed at a sampled target (throw-in
+  // downfield, corner zone, …). Aim at that sampled point rather than only at
+  // the receiver's current position — otherwise a throw-in is lofted at a
+  // receiver standing on the touchline instead of into the field of play.
+  const sampledTarget = restartKind ? passer.pendingKick?.target : undefined;
+  const destination = restartKind ? (sampledTarget?.clone() ?? receiver.pos.clone())
     : action === "pass_through" && assignment?.job === "runner" && assignment.runTarget ? assignment.runTarget.clone()
       : assignment?.target.clone() ?? receiver.moveTarget.clone();
   const startHeight = Math.max(CONFIG.ball.radius, origin.y);

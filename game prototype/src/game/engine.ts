@@ -120,7 +120,6 @@ export class MatchEngine {
   possessionStartedAt = 0;
   transitionTeam: number | null = null;
   transitionUntil = 0;
-  possessionTicks: { idx: number; team: number | null }[] = [];
   selectedIdx = 4;
   gkHoldT = 0;
   // Restart bookkeeping (owned by ./match/restarts).
@@ -239,7 +238,7 @@ export class MatchEngine {
       this.restartStartedId = -1;
       this.restartLaunchedId = -1;
     }
-    if (!restart) { this.restartStartedId = -1; this.restartLaunchedId = -1; }
+    if (!restart) { this.restartStartedId = -1; this.restartLaunchedId = -1; this.restartWaitReason = ""; }
 
     const live = this.rules.live;
     const frozen = this.rules.frozen;
