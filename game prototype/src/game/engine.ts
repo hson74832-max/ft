@@ -30,7 +30,7 @@ import { RulesEngine } from "./rules";
 import { AIController, WorldSnap, type PassFlight } from "./ai";
 import {
   addCrowdStub, buildAIDebug, buildWorld, configureScene,
-  createMatchCamera, createRenderer, resizeRenderer,
+  createMatchCamera, createRenderer, resizeRenderer, disposeSceneGraph,
 } from "./match/world";
 import { buildPlayers, switchToNearest } from "./match/roster";
 import { createMatchSeed, SeededRandom } from "./random";
@@ -191,6 +191,7 @@ export class MatchEngine {
   dispose() {
     this.disposed = true;
     detachInput(this);
+    disposeSceneGraph(this.scene);
     this.renderer.dispose();
   }
 

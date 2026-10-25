@@ -282,7 +282,13 @@ export default function App() {
         : processVideo(candidate, range, opts, onProgress, cancelled));
 
       if (cancelled()) { result.frames.forEach((f) => f.image?.close()); return; }
-      if (result.frames.length < 2) throw new Error('Not enough usable poses were found. Try a longer range or a clearer clip.');
+      if (result.frames.length < 2) {
+        // Release the decoded preview bitmaps before bailing — this result is
+        // discarded, so nothing else will ever close them.
+        result.frames.forEach((f) => f.image?.close());
+        result.players?.forEach((pl) => pl.frames.forEach((f) => f.image?.close()));
+        throw new Error('Not enough usable poses were found. Try a longer range or a clearer clip.');
+      }
       setTracked({ frames: result.frames, fps, players: result.players });
       setActivePlayerId(result.players?.[0]?.id ?? null);
       setTrackInfo({ notice: result.notice, ...result.stats });

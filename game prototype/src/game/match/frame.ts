@@ -41,8 +41,11 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
 
 /** Scorer's team celebrates while the goal is being replayed. */
 export function celebrateGoal(e: MatchHost) {
+  // The rules engine records who scored; inferring it from "the last event"
+  // breaks the moment any other event (whistle, possession, …) lands after
+  // the goal during the celebration phase and the wrong team celebrates.
   for (const p of e.players) {
-    if (p.team === (e.rules.events[e.rules.events.length - 1]?.team ?? 0) && p.role !== "GK") {
+    if (p.team === e.rules.lastScorer && p.role !== "GK") {
       if (!p.anim.actionId) startAction(e, p, "celebrate");
     }
   }
@@ -199,7 +202,6 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
  * Ball truth for this frame: pin it to a held restart or let it roll, resolve
  * body deflections, then run the possession / out-of-play / restart logic.
  */
-/** Ball truth for this frame: pin to a held restart or roll, deflect, then decide possession. */
 export function stepBall(e: MatchHost, dt: number, live: boolean) {
   // The live ball owner can change during a contact event in this frame.
   const currentOwner = e.ball.possessedBy !== null ? e.players[e.ball.possessedBy] : null;
@@ -218,7 +220,7 @@ export function stepBall(e: MatchHost, dt: number, live: boolean) {
     e.ball.shadow.position.set(e.ball.pos.x, 0.021, e.ball.pos.z);
   } else if (currentOwner) e.ball.step(dt, currentOwner.pos, currentOwner.facing, currentOwner.vel);
   else e.ball.step(dt);
-  resolveBallPlayerCollisions(e, );
+  resolveBallPlayerCollisions(e);
 
   if (live) {
     if (!e.rules.pendingRestart) {

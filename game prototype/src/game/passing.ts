@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { CONFIG } from "./config";
-import { estimateKickTravelTime, kickPowerForRange, kickRangeForPower } from "./ball";
 
 export interface PassActor {
   idx: number;
@@ -8,16 +7,6 @@ export interface PassActor {
   role: string;
   pos: THREE.Vector3;
   vel: THREE.Vector3;
-}
-
-export interface PassPhysicsProfile { loft: number; maxPower: number; minPower: number; }
-export interface NamedPassPlan {
-  receiver: PassActor;
-  target: THREE.Vector3;
-  power: number;
-  loft: number;
-  aimDot: number;
-  distance: number;
 }
 
 export function resolveNamedReceiver<T extends PassActor>(
@@ -88,45 +77,4 @@ export function passAimDot(
 
 export function passAimIsValid(dot: number, maxAngleDegrees = 8): boolean {
   return dot >= Math.cos(maxAngleDegrees * Math.PI / 180);
-}
-
-/** A single same-team receiver is the authority for every pass aim point. */
-export function planNamedReceiverPass(
-  origin: THREE.Vector3,
-  receiver: PassActor,
-  profile: PassPhysicsProfile,
-  receiverMaxSpeed: number,
-  requestedPower?: number,
-  startHeight: number = CONFIG.ball.radius,
-): NamedPassPlan | null {
-  startHeight = Math.max(CONFIG.ball.radius, startHeight);
-  let target = receiver.pos.clone();
-  let distance = Math.hypot(target.x - origin.x, target.z - origin.z);
-  if (distance < 1.15) return null;
-
-  const maximumReach = kickRangeForPower(profile.maxPower, profile.loft, startHeight);
-  if (distance > maximumReach - 0.35) return null;
-  let power = kickPowerForRange(distance, profile.loft, profile.maxPower, profile.minPower, startHeight);
-
-  for (let i = 0; i < 3; i++) {
-    const travelTime = estimateKickTravelTime(distance, power, profile.loft, startHeight);
-    target = predictReceiverPosition(receiver.pos, receiver.vel, travelTime, receiverMaxSpeed, {
-      halfLength: CONFIG.pitch.length / 2,
-      halfWidth: CONFIG.pitch.width / 2,
-      buffer: CONFIG.ai.outPlaySafetyMargin,
-    });
-    distance = Math.hypot(target.x - origin.x, target.z - origin.z);
-    if (distance > maximumReach - 0.35) return null;
-    const calibrated = kickPowerForRange(distance, profile.loft, profile.maxPower, profile.minPower, startHeight);
-    // Charge changes pace a little but never overpowers the receiver's measured range.
-    power = requestedPower === undefined
-      ? calibrated
-      : THREE.MathUtils.clamp(requestedPower, calibrated * 0.82, Math.min(profile.maxPower, calibrated * 1.08));
-  }
-
-  const direction = target.clone().sub(origin).setY(0).normalize();
-  const velocity = new THREE.Vector3(direction.x * power, power * profile.loft, direction.z * power);
-  const aimDot = passAimDot(origin, velocity, target);
-  if (!passAimIsValid(aimDot, CONFIG.ai.passAimConeDegrees)) return null;
-  return { receiver, target, power, loft: profile.loft, aimDot, distance };
 }

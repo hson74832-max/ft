@@ -403,6 +403,9 @@ export class AnimationController {
   lastContactEvent: string | null = null;
 
   requestAction(id: string): boolean {
+    // Refuse unknown clips instead of throwing: this runs inside the frame
+    // loop, where an uncaught `clip not found` would freeze the whole match.
+    if (!clipExists(id)) return false;
     const meta = getClip(id);
     if ((this.cooldowns.get(id) ?? 0) > 0) return false;
     if (this.actionId) {

@@ -513,7 +513,9 @@ export const GAME_CLIP_SPECS: GameClipSpec[] = [
   // ---- reactions --------------------------------------------------------------
   {
     slot: 'celebrate', category: 'celebrate', loop: false, rootMotion: false, duration: 2.2,
-    interruptible: [1.2, 1], priority: 1,
+    // Normalized window must satisfy 0 <= from <= to <= 1; [1, 1] = "only at the
+    // very end" (any real action outranks priority 1 and interrupts anyway).
+    interruptible: [1, 1], priority: 1,
     description: 'Two-arm celebration with a small hop',
     pose: (p) => {
       const up = ease(p / 0.25);

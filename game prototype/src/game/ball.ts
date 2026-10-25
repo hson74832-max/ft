@@ -113,9 +113,17 @@ export function kickBall(s: BallState, dir: THREE.Vector3, power: number, loft =
 
 interface KickRangeSample { power: number; range: number; }
 const kickRangeTables = new Map<string, KickRangeSample[]>();
+/** Hard cap so the module-level cache can never grow without bound. */
+const KICK_TABLE_LIMIT = 48;
 
 function buildKickRangeTable(loft: number, maxPower: number, startHeight: number = B.radius): KickRangeSample[] {
-  const key = `${loft.toFixed(4)}:${maxPower.toFixed(2)}:${startHeight.toFixed(3)}`;
+  // `startHeight` arrives as the live ball height — a continuous value. Keying
+  // the cache on the exact height would build (and keep forever) a fresh table
+  // for every distinct airborne height an AI think happens to sample, each one
+  // costing ~100 simulated kicks. Bucket heights to 5 cm instead; the table is
+  // simulated at the first height seen in its bucket. A possessed ball sits
+  // exactly at radius height, so ground passes keep their exact tables.
+  const key = `${loft.toFixed(4)}:${maxPower.toFixed(2)}:${Math.round(startHeight / 0.05)}`;
   const existing = kickRangeTables.get(key);
   if (existing) return existing;
   const table: KickRangeSample[] = [];
@@ -136,6 +144,12 @@ function buildKickRangeTable(loft: number, maxPower: number, startHeight: number
     table.push({ power, range: state.pos.x });
   }
   kickRangeTables.set(key, table);
+  if (kickRangeTables.size > KICK_TABLE_LIMIT) {
+    // Maps iterate in insertion order: drop the oldest table. It is rebuilt
+    // identically if ever needed again, so eviction cannot change behaviour.
+    const oldest = kickRangeTables.keys().next().value;
+    if (oldest !== undefined) kickRangeTables.delete(oldest);
+  }
   return table;
 }
 
