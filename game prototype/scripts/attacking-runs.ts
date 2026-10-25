@@ -4,6 +4,7 @@
 //
 // Runs the real MatchEngine headless (no GPU) and the real tactical planner, with
 // numeric assertions on the decisions and on where players physically end up.
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import assert from "node:assert/strict";
 import * as THREE from "three";
 import { AIController, type WorldPlayer, type WorldSnap } from "../src/game/ai";
@@ -11,10 +12,6 @@ import { CONFIG } from "../src/game/config";
 import { SeededRandom } from "../src/game/random";
 import { attackDirection, groundDistance, laneSafety, onsideLimit, spaceAhead } from "../src/game/tactics";
 import { MatchEngine } from "../src/game/engine";
-
-const context = new Proxy({}, { get: () => () => ({}), set: () => true });
-const canvas = () => ({ width: 800, height: 500, clientWidth: 800, clientHeight: 500, style: {}, getContext: () => context });
-Object.assign(globalThis, { document: { createElement: canvas }, window: { location: { search: "" }, addEventListener() {}, removeEventListener() {} }, devicePixelRatio: 1 });
 
 let passed = 0;
 function test(name: string, check: () => void) {
@@ -49,7 +46,7 @@ function state(seed = 42, team = 0, half: 1 | 2 = 1, carrierRole = 3) {
 function place(p: WorldPlayer, x: number, z: number, sign = 1) { p.pos.set(x * sign, 0, z); p.vel.set(0, 0, 0); }
 
 function attachEngine(f: ReturnType<typeof state>) {
-  const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed: f.snap.matchSeed, headless: true, spectator: true });
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: f.snap.matchSeed, headless: true, spectator: true });
   engine.rules.phase = "INPLAY"; engine.rules.half = f.snap.half; engine.rules.pendingRestart = null; engine.clock = f.snap.time;
   for (const p of engine.players) {
     const source = f.snap.players[p.idx];
@@ -155,7 +152,7 @@ test("checking to the ball offers a safe short outlet when pressed", () => {
 // 3. Progression: transition state, partial-lane shots, forward passes
 // ============================================================
 test("winning the ball opens an attacking transition state", () => {
-  const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed: 5, headless: true, spectator: true });
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 5, headless: true, spectator: true });
   engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
   engine.clock = 12;
   const set = (idx: number, x: number, z: number) => { engine.players[idx].pos.set(x, 0, z); engine.players[idx].vel.set(0, 0, 0); };
@@ -215,7 +212,7 @@ test("a progressive forward pass beats a safe square ball", () => {
 // 4. Match level: runs happen, and possession progresses
 // ============================================================
 test("full match: runs, run variety and progressive intent", () => {
-  const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed: 1234, headless: true, spectator: true });
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 1234, headless: true, spectator: true });
   const runTypes: Record<string, number> = {};
   const episodes: { peak: number; gain: number; sign: number; startX: number }[] = [];
   const active = new Map<number, { peak: number; sign: number; startX: number }>();

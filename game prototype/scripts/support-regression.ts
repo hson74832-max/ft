@@ -1,3 +1,4 @@
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import assert from "node:assert/strict";
 import * as THREE from "three";
 import { AIController, type WorldPlayer, type WorldSnap } from "../src/game/ai";
@@ -7,9 +8,6 @@ import { TeamTactics, attackDirection, groundDistance, laneSafety, onsideLimit }
 import { MatchEngine } from "../src/game/engine";
 import { resolveNamedReceiver } from "../src/game/passing";
 
-const context = new Proxy({}, { get: () => () => ({}), set: () => true });
-const canvas = () => ({ width: 800, height: 500, clientWidth: 800, clientHeight: 500, style: {}, getContext: () => context });
-Object.assign(globalThis, { document: { createElement: canvas }, window: { location: { search: "" }, addEventListener() {}, removeEventListener() {} }, devicePixelRatio: 1 });
 
 let count = 0;
 function test(name: string, check: () => void) { check(); console.log(`PASS ${name}`); count++; }
@@ -37,7 +35,7 @@ function state(seed = 42, team = 0, half: 1 | 2 = 1, carrierRole = 3) {
 }
 function place(p: WorldPlayer, x: number, z: number, sign = 1) { p.pos.set(x * sign, 0, z); p.vel.set(0, 0, 0); }
 function attachEngine(f: ReturnType<typeof state>) {
-  const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed: f.snap.matchSeed, headless: true, spectator: true });
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: f.snap.matchSeed, headless: true, spectator: true });
   engine.rules.phase = "INPLAY"; engine.rules.half = f.snap.half; engine.rules.pendingRestart = null; engine.clock = f.snap.time;
   for (const p of engine.players) {
     const source = f.snap.players[p.idx];

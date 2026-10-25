@@ -2,12 +2,7 @@
 // Usage:  node /tmp/ai-repro.cjs [seed] [seconds] [--trace]
 // Same seed ⇒ same match. Measures the reported symptoms instead of guessing.
 
-// ---- minimal DOM shim (canvas textures only; no GPU in headless mode) ----
-const ctx2d = new Proxy({}, { get: () => () => ({}) , set: () => true });
-const fakeCanvas = () => ({ width: 0, height: 0, style: {}, getContext: () => ctx2d, clientWidth: 800, clientHeight: 500 });
-(globalThis as any).document = { createElement: () => fakeCanvas() };
-(globalThis as any).window = { location: { search: "" }, addEventListener() {}, removeEventListener() {} };
-(globalThis as any).devicePixelRatio = 1;
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 
 const args = process.argv.slice(2);
 const seed = Number(args.find((a) => /^\d+$/.test(a)) ?? 1234);
@@ -23,7 +18,7 @@ async function gkTest() {
   for (const dist of [8, 12, 16, 20, 24]) {
     for (const z of [-1.3, -0.7, 0, 0.7, 1.3]) {
       for (const [speed, loft] of [[18, 0.12], [25, 0.1], [25, 0.2]] as const) {
-        const engine = new MatchEngine(fakeCanvas() as unknown as HTMLCanvasElement, { seed: 1000 + dist * 97 + Math.round(z * 10) * 13 + speed * 7 + Math.round(loft * 100), headless: true, spectator: true, debugAI: true });
+        const engine = new MatchEngine(headlessEngineCanvas(), { seed: 1000 + dist * 97 + Math.round(z * 10) * 13 + speed * 7 + Math.round(loft * 100), headless: true, spectator: true, debugAI: true });
         engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
         const keeper = engine.players.find((p) => p.team === 0 && p.role === "GK")!;
         const goal = engine.ai.ownGoal(0, engine.rules.half);
@@ -67,7 +62,7 @@ async function gkTest() {
 async function main() {
   if (process.argv.includes("--gk")) return gkTest();
   const { MatchEngine } = await import("../src/game/engine");
-  const engine = new MatchEngine(fakeCanvas() as unknown as HTMLCanvasElement, {
+  const engine = new MatchEngine(headlessEngineCanvas(), {
     seed, headless: true, spectator: true, debugAI: true,
   });
   // Silence per-second console tables; we aggregate instead.

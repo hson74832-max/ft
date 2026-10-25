@@ -1,12 +1,7 @@
 // Tactical regression harness for the four reported behaviours. Runs the REAL engine
 // headless (no GPU) plus direct AI decisions, with concrete numeric assertions.
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import * as THREE from "three";
-
-const ctx2d: any = new Proxy({}, { get: () => () => ({}) });
-const fakeCanvas = () => ({ width: 0, height: 0, style: {}, getContext: () => ctx2d, clientWidth: 800, clientHeight: 500 });
-(globalThis as any).document = { createElement: () => fakeCanvas() };
-(globalThis as any).window = { location: { search: "" }, addEventListener() {}, removeEventListener() {} };
-(globalThis as any).devicePixelRatio = 1;
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -22,7 +17,7 @@ async function main() {
   const quiet = console.log;
   const mute = () => { console.log = () => {}; console.groupCollapsed = () => {}; console.table = () => {}; console.info = () => {}; console.warn = () => {}; console.groupEnd = () => {}; };
   const unmute = () => { console.log = quiet; };
-  const makeEngine = (seed: number) => new MatchEngine(fakeCanvas() as unknown as HTMLCanvasElement, { seed, headless: true, spectator: true, debugAI: true });
+  const makeEngine = (seed: number) => new MatchEngine(headlessEngineCanvas(), { seed, headless: true, spectator: true, debugAI: true });
 
   // ================= 1. Central unmarked attacker near goal must SHOOT =================
   mute();

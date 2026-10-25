@@ -7,6 +7,7 @@
 // way the game does, and asserts that the prototype plays it: slot bindings, skeleton
 // validity, retarget fidelity, locomotion and action overrides, ball-contact timing, root
 // motion direction, and a live match running on the generated clips.
+import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as THREE from "three";
@@ -20,11 +21,6 @@ import {
 import { AnimationController, actionPose, getClip, hasBoundLocomotion, locomotionPose } from "../src/game/anims";
 import { MatchEngine } from "../src/game/engine";
 
-// Headless DOM stubs: the engine builds its world through canvas textures, exactly like
-// the other scenario suites.
-const context = new Proxy({}, { get: () => () => ({}), set: () => true });
-const canvas = () => ({ width: 800, height: 500, clientWidth: 800, clientHeight: 500, style: {}, getContext: () => context });
-Object.assign(globalThis, { document: { createElement: canvas }, window: { location: { search: "" }, addEventListener() {}, removeEventListener() {} }, devicePixelRatio: 1 });
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = "") => {
@@ -160,7 +156,7 @@ writeFileSync(resolve("/tmp/motion-pack-under-test.json"), text);
 // The registry is process-global, so start the live match from a clean import path:
 // drop everything, then let the engine import the pack exactly like Motion Lab does.
 clearFieldMotionRegistry();
-const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed: 7, headless: true, spectator: true, debugAI: false });
+const engine = new MatchEngine(headlessEngineCanvas(), { seed: 7, headless: true, spectator: true, debugAI: false });
 const imported = engine.importMotionPack(text, "game-motion-pack.json");
 check("the engine imports the pack without rejecting clips", imported.length === clips.length, `${imported.length} clips`);
 check("the engine import binds slots again", getSlotBindings().length === clips.length, `${getSlotBindings().length} bindings`);
