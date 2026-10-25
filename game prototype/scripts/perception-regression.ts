@@ -96,7 +96,10 @@ function visionFixture(seed: number, facing: number, memoryT: number | null) {
     players.push({
       idx, team, role, roleIdx,
       pos: new THREE.Vector3(spots[local][0], 0, spots[local][1]), vel: new THREE.Vector3(),
-      facing, speed: 0, busy: false, uninterruptible: false, cooldowns: new Map(), stamina: 1,
+      // Only the carrier's body angle is under test here: the live engine orients an
+      // idle player toward the ball, so everyone else faces the man on the ball.
+      facing: local === 3 ? facing : Math.atan2(-(-spots[local][1]), -spots[local][0]),
+      speed: 0, busy: false, uninterruptible: false, cooldowns: new Map(), stamina: 1,
       hasBall: idx === 3, callForBall: false, isHuman: false, runSerial: 0,
       style: ai.sampleStyle(role, idx), attributes: ai.sampleAttributes(role, idx),
       perception: createPerception(seed, idx),

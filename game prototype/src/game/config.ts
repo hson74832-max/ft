@@ -215,6 +215,12 @@ export const CONFIG = {
     driveLead: 8.0,             // m — depth of a driving run into midfield space
     checkDepth: 4.5,            // m — how short a player drops to offer an outlet
     shotPartialLane: 0.28,      // a partially blocked lane is still a shot
+    // ---- Receiver awareness ------------------------------------------------
+    // A pass is only as good as the receiver's ability to control it. These gate the
+    // "does he know the ball is coming?" checks on the passing decision.
+    blindFacingDot: -0.85,      // facing dot at/above this a stationary receiver is still receptive
+    blindPassPenalty: 0.55,     // score cost of a delivery arriving behind the receiver
+    runIntentReward: 0.22,      // utility boost for a pass into a dynamic run
     phaseWeights: {
       build: { gain: 0.26, safety: 0.34, hazard: 0.20 },
       progress: { gain: 0.34, safety: 0.28, hazard: 0.20 },

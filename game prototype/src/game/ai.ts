@@ -797,10 +797,17 @@ export class AIController {
       if (currentDistance < 2 || currentDistance > 27) continue;
       const job = plan?.assignments.get(mate.idx);
       const gainNow = (known.pos.x - p.pos.x) * sign;
-      // A player making a run gets the through ball; a static option does not.
+      // A player making a run gets the through ball; a static option does not. The
+      // plan's run assignment is one signal; a receiver already sprinting forward
+      // into space is another — read the run from his velocity as well.
       const runnable = (job?.runType === "spin" || job?.runType === "drive") && !!trigger?.active;
+      const runVel = known.vel.clone().setY(0);
+      const intentRun = runVel.lengthSq() > 1e-4 && runVel.length() > CONFIG.player.runSpeed
+        && runVel.normalize().dot(new THREE.Vector3(sign, 0, 0)) > 0.5
+        && nearestSpace(known.pos, field) > T.minSafeReceiverSpace;
+      const running = runnable || intentRun;
       const tryThrough = (job?.job === "runner" && gainNow > 1.5 && this.can(p, "pass_through"))
-        || (runnable && gainNow > 3 && this.can(p, "pass_through"));
+        || (running && gainNow > 3 && this.can(p, "pass_through"));
       const actions = tryThrough ? ["pass_through", currentDistance > 13 ? "pass_long" : "pass_short"]
         : [currentDistance > 13 ? "pass_long" : "pass_short"];
       let id: string | undefined;
@@ -822,6 +829,10 @@ export class AIController {
       // same option one failed attempt longer than a fragile one.
       const retryLimit = (p.attributes?.mentality.resilience ?? 75) > 85 ? 3 : 2;
       if (failed && failed.key === `${id}:${mate.idx}` && failed.count >= retryLimit) continue;
+      // Receptive stance: a pass arriving behind a teammate's back is heavily
+      // penalised, so a blind delivery only wins when there is genuinely nothing
+      // better (which is the right call rather than turning the ball over).
+      const blindness = this.receiverBlindness(known, target, p, intentRun);
       const gain = (target.x - p.pos.x) * sign;
       const lane = laneSafety(snap.ballPos, target, field, id === "pass_long" ? 17 : 11);
       // Use both the current marker and predicted position: a marked player is not
@@ -856,10 +867,14 @@ export class AIController {
         + (crossesLine && safe ? 0.16 : 0)
         + (purpose === "penetrate" && safe ? 0.18 : 0)
         + (purpose === "switch" && safe ? 0.10 : 0)
+        // A pass into a teammate's dynamic run into dangerous space is worth more
+        // than a safe ball to a stationary man.
+        + (running && safe && (crossesLine || purpose === "penetrate") ? T.runIntentReward : 0)
         // A cross is aimed at a marked man by design: the box being occupied is the
         // point of the ball, so a cross is scored on its delivery lane and not on the
         // receiver's crowding. Ground passes keep the old penalties.
         - crowd * 0.17 - (crossBall ? 0 : (space < 1.5 ? 0.35 : 0)) - (lane < 0.35 ? 0.4 : 0)
+        - blindness * CONFIG.tactics.blindPassPenalty
         - novelty(key) * 0.35
         // Novelty saturates (0.38 cap ≈ 0.13 of score): a clearly-best pass
         // stayed best forever and A→B→A→B cycled deterministically. The
@@ -996,6 +1011,37 @@ export class AIController {
       action: null, noveltyKey: dribble.key,
       reason: `${needsReset ? "ESCAPE" : "ADVANCE"} ${dribble.lane}: path ${carryLane.toFixed(2)}, space ${dribble.space.toFixed(2)}, ahead ${forwardSpace.toFixed(2)} · ${phase} · ${runsOn}`,
       utilities, passOptions, urgent: false };
+  }
+
+  /**
+   * How blind a pass to `receiver` would be: 0 = he can control the delivery,
+   * 1 = it arrives behind his back. `intentRun` marks a teammate already sprinting
+   * into space ahead of the ball — he expects it and the pass is led to his stride,
+   * so his back to the passer is not blindness. A stationary teammate must be
+   * roughly facing the pass, and a teammate sprinting away from the ball cannot
+   * control a pass played to his feet.
+   */
+  private receiverBlindness(receiver: WorldPlayer, target: THREE.Vector3, passer: WorldPlayer, intentRun: boolean): number {
+    const fwd = new THREE.Vector3(Math.cos(receiver.facing), 0, -Math.sin(receiver.facing));
+    const toArrival = target.clone().sub(receiver.pos).setY(0);
+    const toPasser = passer.pos.clone().sub(receiver.pos).setY(0);
+    // A delivery landing on top of him: what matters is the direction to the passer
+    // who is playing it.
+    const arrivalDot = toArrival.lengthSq() > 0.04
+      ? fwd.dot(toArrival.normalize())
+      : (toPasser.lengthSq() > 1e-4 ? fwd.dot(toPasser.normalize()) : 1);
+    // Sprinting straight away from the ball (and not a committed forward run): the
+    // pass would arrive at his back.
+    const runningAway = receiver.speed > CONFIG.player.runSpeed
+      && toPasser.lengthSq() > 1e-4
+      && receiver.vel.clone().setY(0).normalize().dot(toPasser.clone().normalize()) < -0.3;
+    if (runningAway && !intentRun) return 1;
+    // A body angle within ~150° of the passer still lets him control the delivery.
+    if (arrivalDot >= CONFIG.tactics.blindFacingDot) return 0;
+    // A moving teammate tracks his run with his body; only a stationary one can be
+    // truly blind to the ball at this instant.
+    if (receiver.speed > 0.4) return 0;
+    return THREE.MathUtils.clamp((CONFIG.tactics.blindFacingDot - arrivalDot) / 0.15, 0, 1);
   }
 
   /** Attacking-coordinate x of the opponents' second-last defender (the offside line). */

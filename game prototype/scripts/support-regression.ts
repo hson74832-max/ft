@@ -23,12 +23,20 @@ function state(seed = 42, team = 0, half: 1 | 2 = 1, carrierRole = 3) {
     const [x, z] = positions[local];
     players.push({ idx, team: playerTeam, role: roles[roleIdx], roleIdx,
       pos: new THREE.Vector3(x * sign, 0, z), vel: new THREE.Vector3(),
-      facing: playerTeam === team ? (sign > 0 ? 0 : Math.PI) : (sign > 0 ? Math.PI : 0),
+      facing: 0,
       speed: 0, busy: false, uninterruptible: false, cooldowns: new Map(), stamina: 1,
       hasBall: local === carrierRole, callForBall: false, isHuman: false, runSerial: 0, style: ai.sampleStyle(roles[roleIdx]) });
   }
   players.sort((a, b) => a.idx - b.idx);
   const carrier = players[team * 5 + carrierRole];
+  // The carrier keeps his attacking body angle (the run trigger reads it); every
+  // other player faces the man on the ball, as the live engine orients idle players.
+  carrier.facing = sign > 0 ? 0 : Math.PI;
+  for (const p of players) {
+    if (p === carrier) continue;
+    const dx = carrier.pos.x - p.pos.x, dz = carrier.pos.z - p.pos.z;
+    if (Math.hypot(dx, dz) > 0.01) p.facing = Math.atan2(-dz, dx);
+  }
   const snap: WorldSnap = { ballPos: carrier.pos.clone().setY(CONFIG.ball.radius), ballVel: new THREE.Vector3(),
     ballOwner: carrier.idx, ballOwnerTeam: team, players, time: 10, half, matchSeed: seed, ballKickAge: 1 };
   return { ai, snap, carrier, sign, own: players.filter((p) => p.team === team), opp: players.filter((p) => p.team !== team) };
@@ -43,6 +51,14 @@ function attachEngine(f: ReturnType<typeof state>) {
     p.style = { ...source.style }; p.restartTaker = false; p.pendingKick = null;
   }
   engine.ball.pos.copy(f.snap.ballPos); engine.ball.possess(f.carrier.idx, f.carrier.team);
+  // The constructor ran a kickoff and seeded possession bookkeeping for its own
+  // kickoff player; this fixture overrides possession to the carrier, so reset it to
+  // match. Without this the first trackPossession() sees a team change that never
+  // happened and opens a spurious transition window (which re-triggers runs).
+  engine.seenOwner = f.carrier.idx;
+  engine.seenOwnerTeam = f.carrier.team;
+  engine.possessionStartedAt = f.snap.ownerSince ?? engine.clock - 0.6;
+  engine.transitionUntil = 0;
   return engine;
 }
 
