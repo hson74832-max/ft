@@ -143,7 +143,8 @@ export function humanPass(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charge
   const power = through
     ? kp.through * (0.85 + 0.3 * charge)
     : THREE.MathUtils.lerp(kp.pass, kp.longPass, charge);
-  if (startAction(e, p, id, target, tgt?.idx, undefined, power)) {
+  const passingRating = id === "pass_long" ? p.attributes.passing.longGroundPassing : p.attributes.passing.shortGroundPassing;
+  if (startAction(e, p, id, target, tgt?.idx, undefined, power * (0.5 + passingRating / 150))) {
     p.decisionReason = `Human ${id} → ${tgt ? tgt.role : "space"} (power ${(charge * 100) | 0}%)`;
   }
   void snap;
@@ -164,7 +165,8 @@ export function humanShoot(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charg
     : id === "shoot_finesse"
       ? kp.finesse * (0.9 + 0.2 * charge)
       : THREE.MathUtils.lerp(18, kp.shoot, charge);
-  if (startAction(e, p, id, new THREE.Vector3(gx, 0, aimZ), undefined, undefined, power)) {
+  const shootingRating = id === "shoot_volley" ? p.attributes.shooting.volleys : p.attributes.shooting.shotPower;
+  if (startAction(e, p, id, new THREE.Vector3(gx, 0, aimZ), undefined, undefined, power * (0.5 + shootingRating / 150))) {
     p.decisionReason = `Human ${id} power ${(charge * 100) | 0}%`;
   }
   void snap;
@@ -181,25 +183,26 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
     return;
   }
   if (!live) { if (tr) tr.branch = "notLive"; return; }
+  const wp: WorldPlayer = {
+    idx: p.idx, team: p.team, role: p.role, roleIdx: p.roleIdx, pos: p.pos, vel: p.vel, facing: p.facing,
+    speed: p.speed, busy: p.anim.busy, uninterruptible: p.anim.uninterruptible, actionId: p.anim.actionId,
+    cooldowns: p.anim.cooldowns, stamina: p.stamina,
+    hasBall: e.ball.possessedBy === p.idx, callForBall: p.callForBall, isHuman: p.isHuman,
+    runSerial: p.runSerial, style: p.style, attributes: p.attributes,
+    moveTarget: p.moveTarget, desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
+    tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
+  };
   if (p.role === "GK" && e.ball.possessedBy === p.idx) {
     p.holdT += dt;
     p.moveTarget.copy(p.pos); p.desiredSpeed = 0;
-    if (p.holdT < (e.ball.handsRestrictedTeam === p.team ? 0.35 : 1.25)) {
+    const pressure = e.ai.goalkeeperPressure(wp, snap);
+    if (!pressure.urgent && p.holdT < (e.ball.handsRestrictedTeam === p.team ? 0.35 : 1.25)) {
       p.decisionReason = "GK hold · choosing distribution";
       if (tr) tr.branch = "gkHold";
       return;
     }
   } else p.holdT = 0;
   if (tr) tr.branch = "ai";
-  const wp: WorldPlayer = {
-    idx: p.idx, team: p.team, role: p.role, roleIdx: p.roleIdx, pos: p.pos, vel: p.vel, facing: p.facing,
-    speed: p.speed, busy: p.anim.busy, uninterruptible: p.anim.uninterruptible,
-    cooldowns: p.anim.cooldowns, stamina: p.stamina,
-    hasBall: e.ball.possessedBy === p.idx, callForBall: p.callForBall, isHuman: p.isHuman,
-    runSerial: p.runSerial, style: p.style,
-    moveTarget: p.moveTarget, desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
-    tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
-  };
   const dec = e.ai.think(wp, p.roleIdx, snap, e.clock);
   // think() returns its cached object between re-evaluations; identity tells fresh from cached.
   const fresh = e.lastAppliedDecision.get(p.idx) !== dec;
@@ -223,7 +226,7 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
     // passes/shots at stale targets every frame after the previous clip finished.
     if (!fresh) {
       if (tr) tr.startActionResult = "skipped:cached-decision";
-    } else if (p.anim.busy && p.anim.uninterruptible) {
+    } else if (p.anim.busy && p.anim.uninterruptible && !(p.role === "GK" && dec.urgent && e.ball.possessedBy === p.idx && p.anim.actionId === "first_touch")) {
       if (tr) tr.startActionResult = `skipped:locked(${p.anim.actionId})`;
       e.ai.nextThink.set(p.idx, e.clock + 0.1); // re-decide shortly; avoids RNG thrash every frame
     } else {

@@ -178,10 +178,10 @@ export class MatchEngine {
       const plan = passer && planNamedPass(this, passer, action, receiverIdx, undefined, this.rules.pendingRestart?.kind);
       return plan ? { target: plan.target, arrivalTime: plan.arrivalTime, power: plan.power } : null;
     };
-    this.ai.gkDistribution = (gkIdx) => {
+    this.ai.gkDistribution = (gkIdx, urgent = false) => {
       const gk = this.players[gkIdx];
       if (!gk) return null;
-      const choice = computeGkDistribution(this, gk);
+      const choice = computeGkDistribution(this, gk, urgent);
       return choice ? { action: choice.action, receiverIdx: choice.receiver.idx, target: choice.target, reason: choice.reason } : null;
     };
     attachInput(this);

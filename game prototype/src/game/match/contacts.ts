@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { passAimDot, passAimIsValid } from "../passing";
+import { tieBreakHash } from "../random";
 import { startAction } from "./actions";
 import { aiEvent } from "./debug";
 import { captureOffsideAtKick, flagOffside } from "./offside";
@@ -96,7 +97,13 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       }
       captureOffsideAtKick(e, p, activeRestart?.kind);
       releaseToKick(e, p);
-      e.ball.kick(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), plan.power, plan.loft);
+      const passRating = p.role === "GK" ? p.attributes.goalkeeping.kicking
+        : activeRestart?.kind === "free_kick" ? p.attributes.passing.freeKick
+          : action === "pass_long" ? p.attributes.passing.longGroundPassing : p.attributes.passing.shortGroundPassing;
+      const passError = CONFIG.ai.passError * (75 - passRating) / 75
+        * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `pass-accuracy:${action}:${pk?.passTo ?? -1}`) * 2 - 1);
+      const passDirection = plan.target.clone().sub(e.ball.pos).setY(0).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), passError);
+      e.ball.kick(passDirection, plan.power, plan.loft);
       const launchDot = passAimDot(e.ball.pos, e.ball.vel, plan.target);
       if (!passAimIsValid(launchDot, CONFIG.ai.passAimConeDegrees)) {
         e.ball.vel.set(0, 0, 0); e.ball.possess(p.idx, p.team);
@@ -113,11 +120,20 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
     case "shoot_normal": case "shoot_finesse": case "shoot_volley": {
       if (!ownerIsMe && !(action === "shoot_volley" && e.ball.possessedBy === null && p.pos.distanceTo(e.ball.pos) < 1.4)) break;
       const tgt = pk?.target ?? e.ai.goalPos(p.team, e.rules.half);
-      const power = pk?.power ?? (action === "shoot_normal" ? kp.shoot : action === "shoot_finesse" ? kp.finesse : kp.volley);
+      const power = pk?.power ?? (action === "shoot_normal" ? kp.shoot * (0.5 + p.attributes.shooting.shotPower / 150)
+        : action === "shoot_finesse" ? kp.finesse * (0.5 + p.attributes.shooting.shotPower / 150)
+          : kp.volley * (0.5 + p.attributes.shooting.volleys / 150));
       captureOffsideAtKick(e, p, activeRestart?.kind);
       releaseToKick(e, p);
-      const spin = action === "shoot_finesse" ? p.style.finesseSide : 0;
-      e.ball.kick(dirTo(tgt), power, action === "shoot_volley" ? 0.25 : 0.14, spin);
+      const shotRating = activeRestart?.kind === "penalty" ? p.attributes.shooting.penalties
+        : activeRestart?.kind === "free_kick" ? p.attributes.passing.freeKick
+          : action === "shoot_volley" ? p.attributes.shooting.volleys
+            : p.pos.distanceTo(tgt) > CONFIG.tactics.clearShotDistance ? p.attributes.shooting.longShots : p.attributes.shooting.finishing;
+      const shotError = CONFIG.ai.passError * (75 - shotRating) / 75
+        * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `shot-accuracy:${action}:${activeRestart?.kind ?? "open"}`) * 2 - 1);
+      const shotDirection = dirTo(tgt).applyAxisAngle(new THREE.Vector3(0, 1, 0), shotError);
+      const spin = action === "shoot_finesse" ? p.style.finesseSide * (0.5 + p.attributes.passing.curve / 150) : 0;
+      e.ball.kick(shotDirection, power, action === "shoot_volley" ? 0.25 : 0.14, spin);
       e.tacticalStats.shots++;
       ballReleasedByAction = true;
       if (!activeRestart) e.openPlayKickCount++;
@@ -129,7 +145,7 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const tgt = pk?.target ?? e.ai.goalPos(p.team, e.rules.half);
       captureOffsideAtKick(e, p, activeRestart?.kind);
       releaseToKick(e, p);
-      e.ball.kick(dirTo(tgt), kp.header, 0.2);
+      e.ball.kick(dirTo(tgt), kp.header * (0.5 + p.attributes.shooting.heading / 150), 0.2);
       ballReleasedByAction = true;
       if (!activeRestart) e.openPlayKickCount++;
       break;
@@ -228,7 +244,8 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       break;
     }
     case "intercept": case "first_touch": case "dribble_touch": {
-      if (e.ball.possessedBy === null && p.pos.distanceTo(e.ball.pos) < CONFIG.player.interceptRadius + 0.5) {
+      const controlRating = action === "intercept" ? p.attributes.defending.interceptions : p.attributes.ballControl.groundReceiving;
+      if (e.ball.possessedBy === null && p.pos.distanceTo(e.ball.pos) < (CONFIG.player.interceptRadius + 0.5) * (0.5 + controlRating / 150)) {
         e.ball.possess(p.idx, p.team);
         e.offsideCandidates.clear(); e.offsideTeam = null;
         e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} ${action} takes ball`, p.team);
@@ -256,13 +273,19 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const lateralSpeed = Math.abs(p.vel.z);
       const movingWithDive = diving && Math.sign(p.vel.z) === Math.sign(e.ball.pos.z - p.pos.z);
       const offBalance = movingWithDive ? 0 : lateralSpeed * CONFIG.ai.gkOffBalancePenalty;
-      const reach = Math.max(0.5, (diving ? CONFIG.ai.gkStandingReach + 0.8 : CONFIG.ai.gkStandingReach + 0.3) - offBalance);
+      const reachRating = p.attributes.goalkeeping.reach;
+      const divingRating = p.attributes.goalkeeping.diving;
+      const reachScale = 0.5 + reachRating / 150;
+      const baseReach = diving
+        ? CONFIG.ai.gkStandingReach * reachScale + 0.8 * (0.5 + divingRating / 150)
+        : (CONFIG.ai.gkStandingReach + 0.3 + (smotherCarrier ? 0.25 : 0)) * reachScale;
+      const reach = Math.max(0.5, baseReach - offBalance);
       // Closest approach of the ball path over the contact window (it may still be arriving).
       let best = Infinity, bestH = e.ball.pos.y;
       for (let s = 0; s <= 6; s++) {
         const t = s * 0.025;
         const bx = e.ball.pos.x + e.ball.vel.x * t, bz = e.ball.pos.z + e.ball.vel.z * t;
-        const by = e.ball.pos.y + e.ball.vel.y * t - 0.5 * CONFIG.ball.gravity * t * t;
+        const by = Math.max(CONFIG.ball.radius, e.ball.pos.y + e.ball.vel.y * t - 0.5 * CONFIG.ball.gravity * t * t);
         const dist = Math.hypot(bx - p.pos.x, bz - p.pos.z);
         if (dist < best) { best = dist; bestH = by; }
       }
@@ -276,7 +299,9 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       // keeper's side of his body; a shielded ball can at best be blocked loose.
       const exposed = !smotherCarrier || e.ball.pos.distanceTo(p.pos) < smotherCarrier.pos.distanceTo(p.pos);
       // Catch only clean, central, not-too-hot balls; otherwise the save is a parry.
-      if (action === "gk_catch" && exposed && speed < CONFIG.ai.gkCatchSpeed && best < CONFIG.ai.gkStandingReach + 0.15) {
+      const catchSpeed = CONFIG.ai.gkCatchSpeed * (0.5 + (p.attributes.goalkeeping.handling + p.attributes.goalkeeping.catching) / 300);
+      const catchReach = (CONFIG.ai.gkStandingReach + 0.15 + (smotherCarrier ? 0.25 : 0)) * reachScale;
+      if (action === "gk_catch" && exposed && speed < catchSpeed && best < catchReach) {
         e.ball.possess(p.idx, p.team);
         e.ball.vel.set(0, 0, 0);
         e.offsideCandidates.clear(); e.offsideTeam = null;
@@ -288,9 +313,10 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       // Parry: deflect wide of goal, keeping some of the shot's energy.
       const ownGoal = e.ai.ownGoal(p.team, e.rules.half);
       const away = e.ball.pos.clone().sub(ownGoal).setY(0).normalize();
-      away.z += (e.ball.pos.z >= p.pos.z ? 1 : -1) * 0.7;
+      const parrying = p.attributes.goalkeeping.parrying;
+      away.z += (e.ball.pos.z >= p.pos.z ? 1 : -1) * 0.7 * (0.5 + parrying / 150);
       releaseToKick(e, p);
-      e.ball.kick(away.normalize(), THREE.MathUtils.clamp(speed * 0.4, 5, 12), 0.3);
+      e.ball.kick(away.normalize(), THREE.MathUtils.clamp(speed * (0.55 - parrying / 500), 5, 12), 0.3);
       e.offsideCandidates.clear(); e.offsideTeam = null;
       aiEvent(e, `GK PARRY #${p.idx} (${action}) · ${speed.toFixed(1)} m/s at ${best.toFixed(2)}m`);
       e.rules.emit("SAVE", `GK ${action} — parried!`, p.team);
@@ -329,7 +355,10 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
       if (!plan) { p.decisionReason = "CORNER CANCELLED · no valid named runner"; break; }
       releaseToKick(e, p);
-      e.ball.kick(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), plan.power, plan.loft, p.style.finesseSide);
+      const cornerError = CONFIG.ai.passError * (75 - p.attributes.passing.corner) / 75
+        * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `corner-accuracy:${activeRestart?.id ?? 0}`) * 2 - 1);
+      const cornerDirection = plan.target.clone().sub(e.ball.pos).setY(0).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), cornerError);
+      e.ball.kick(cornerDirection, plan.power, plan.loft, p.style.finesseSide * (0.5 + p.attributes.passing.curve / 150));
       ballReleasedByAction = true;
       recordPass(e, p, action, plan);
       if (!activeRestart) e.openPlayKickCount++;

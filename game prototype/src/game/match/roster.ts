@@ -41,7 +41,7 @@ export function buildPlayers(e: MatchHost) {
         tackleRecoveryT: 0, tackleProtectionT: 0, tackleChallenge: null,
         callForBall: false, isHuman: false, stamina: 1,
         decisionReason: "init", utilities: {}, restartTaker: false,
-        runSerial: 0, style: e.ai.sampleStyle(f.role, idx),
+        runSerial: 0, style: e.ai.sampleStyle(f.role, idx), attributes: e.ai.sampleAttributes(f.role, idx),
       });
     });
     startIdx += FORMATIONS[key].length;

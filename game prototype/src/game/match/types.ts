@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import type { AnimationController } from "../anims";
 import type { PlayerRig } from "../playerMesh";
-import type { AIDecision, PlayerStyle } from "../ai";
+import type { AIDecision, PlayerAttributes, PlayerStyle } from "../ai";
 import type { RunType, SupportJob } from "../tactics";
 
 /** A tackle wind-up, frozen at action start so contact timing cannot be gamed. */
@@ -34,7 +34,7 @@ export interface EnginePlayer {
   callForBall: boolean; isHuman: boolean; stamina: number;
   decisionReason: string; utilities: Record<string, number>;
   restartTaker: boolean;
-  runSerial: number; style: PlayerStyle;
+  runSerial: number; style: PlayerStyle; attributes: PlayerAttributes;
   supportJob?: SupportJob;
   supportRun?: RunType;
   supportMode?: string;

@@ -50,7 +50,7 @@ export function possessionCheck(e: MatchHost) {
     // shift AI decision noise or restart sampling later in the match.
     const frame = Math.round(e.clock * 60);
     const dribbleRoll = tieBreakHash(e.matchSeed, o.idx, frame, `dribble:${frame}`);
-    if (o.speed > 5.5 && !o.anim.busy && dribbleRoll < 0.025 * o.style.carry) startAction(e, o, "dribble_touch");
+    if (o.speed > 5.5 && !o.anim.busy && dribbleRoll < 0.025 * o.style.carry * (0.5 + o.attributes.ballControl.runningPossession / 150)) startAction(e, o, "dribble_touch");
     return;
   }
 
@@ -67,7 +67,9 @@ export function possessionCheck(e: MatchHost) {
 
     // GK catch in penalty box:
     // Automatic claim is for soft/loose balls only; shots go through the save model.
-    if (isGK && inPenaltyBox && e.ball.handsRestrictedTeam !== p.team && d < CONFIG.ai.catchRadius + 0.6 && e.ball.pos.y < 1.95 && e.ball.speed < 9) {
+    const gkControlScale = isGK ? 0.5 + p.attributes.goalkeeping.reach / 150 : 1;
+    const gkCatchSpeed = isGK ? 9 * (0.5 + (p.attributes.goalkeeping.handling + p.attributes.goalkeeping.catching) / 300) : 9;
+    if (isGK && inPenaltyBox && e.ball.handsRestrictedTeam !== p.team && d < (CONFIG.ai.catchRadius + 0.6) * gkControlScale && e.ball.pos.y < 1.95 && e.ball.speed < gkCatchSpeed) {
       e.ball.possess(p.idx, p.team);
       e.ball.vel.set(0, 0, 0);
       startAction(e, p, "gk_catch");
@@ -79,8 +81,9 @@ export function possessionCheck(e: MatchHost) {
     // only at a controllable pace. A footballer can kill a firm pass (~14 m/s); a 25 m/s
     // drive cannot be "trapped" (it deflects off the body instead). Keepers in their own
     // box never use this path: shots must go through the save model.
-    const trapRadius = CONFIG.player.controlRadius + 0.3; // ~1.05m
-    const controllable = e.ball.speed <= CONFIG.player.maxTrapSpeed;
+    const receivingScale = 0.5 + p.attributes.ballControl.groundReceiving / 150;
+    const trapRadius = (CONFIG.player.controlRadius + 0.3) * receivingScale;
+    const controllable = e.ball.speed <= CONFIG.player.maxTrapSpeed * receivingScale;
     if (d < trapRadius && e.ball.pos.y < 0.75 && controllable && (!(isGK && inPenaltyBox) || e.ball.handsRestrictedTeam === p.team)) {
       if (flagOffside(e, p)) return;
       e.ball.possess(p.idx, p.team);
@@ -94,7 +97,9 @@ export function possessionCheck(e: MatchHost) {
     }
 
     // Aerial ball cushion / header:
-    if (d < 1.35 && e.ball.pos.y >= 0.75 && e.ball.pos.y < 2.3 && !p.anim.busy && !isGK && e.ball.speed < 22) {
+    const highBallScale = 0.5 + p.attributes.ballControl.highBallReceiving / 150;
+    const headerHeight = 2.3 + (p.attributes.physical.jumping - 75) * 0.005;
+    if (d < 1.35 * highBallScale && e.ball.pos.y >= 0.75 && e.ball.pos.y < headerHeight && !p.anim.busy && !isGK && e.ball.speed < 22 * highBallScale) {
       if (flagOffside(e, p)) return;
       const target = e.ai.goalPos(p.team, e.rules.half);
       target.z = THREE.MathUtils.clamp(e.ball.pos.z * 0.5, -1.1, 1.1);

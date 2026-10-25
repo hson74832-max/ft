@@ -129,8 +129,13 @@ export function placeForRestart(e: MatchHost) {
         if (Math.abs(da - db) > 1.4) return da - db;
         return tieBreakHash(e.matchSeed, a.idx, a.runSerial, `restart:${pr.id}`) - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `restart:${pr.id}`);
       });
-      if (pr.kind === "free_kick" || pr.kind === "penalty") {
-        return [...ranked].sort((a, b) => b.style.creativity - a.style.creativity || b.style.shooting - a.style.shooting)[0];
+      if (pr.kind === "penalty") {
+        return [...ranked].sort((a, b) => b.attributes.shooting.penalties - a.attributes.shooting.penalties
+          || b.attributes.shooting.finishing - a.attributes.shooting.finishing)[0];
+      }
+      if (pr.kind === "free_kick") {
+        return [...ranked].sort((a, b) => b.attributes.passing.freeKick - a.attributes.passing.freeKick
+          || b.attributes.shooting.longShots - a.attributes.shooting.longShots)[0];
       }
       return ranked[0] ?? null;
     };

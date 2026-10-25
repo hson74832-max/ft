@@ -273,6 +273,138 @@ async function main() {
     engine.dispose();
   }
 
+  // ================= 6. Structured, role-based attributes =================
+  {
+    const ai = new AIController(new SeededRandom(106), 106);
+    const def = ai.sampleAttributes("DEF", 1);
+    const fwd = ai.sampleAttributes("FWD", 4);
+    const gk = ai.sampleAttributes("GK", 0);
+    const ratings = [def, fwd, gk].flatMap((a) => Object.values(a).flatMap((group) => Object.values(group)));
+    check("player attributes cover every group with valid 1–99 ratings",
+      ratings.length === 3 * 43 && ratings.every((rating) => Number.isFinite(rating) && rating >= 1 && rating <= 99),
+      `${ratings.length} ratings`);
+    check("role profiles make defenders, forwards and keepers fundamentally different",
+      def.defending.standingTackle > fwd.defending.standingTackle + 25
+      && def.defending.interceptions > fwd.defending.interceptions + 20
+      && fwd.shooting.finishing > def.shooting.finishing + 25
+      && gk.goalkeeping.catching > fwd.goalkeeping.catching + 45,
+      `DEF tackle ${def.defending.standingTackle}, FWD finish ${fwd.shooting.finishing}, GK catch ${gk.goalkeeping.catching}`);
+    check("attribute generation is deterministic and isolated from the style stream",
+      JSON.stringify(ai.sampleAttributes("MID", 3)) === JSON.stringify(ai.sampleAttributes("MID", 3))
+      && (() => {
+        const withAttributes = new AIController(new SeededRandom(107), 107);
+        const withoutAttributes = new AIController(new SeededRandom(107), 107);
+        const expected = withoutAttributes.sampleStyle("MID");
+        withAttributes.sampleAttributes("MID", 3);
+        return JSON.stringify(withAttributes.sampleStyle("MID")) === JSON.stringify(expected);
+      })());
+  }
+
+  // ================= 7. Long back-pass to the keeper remains on the grass =================
+  {
+    mute();
+    const engine = makeEngine(108);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    const keeper = engine.players[0], passer = engine.players[3];
+    keeper.pos.set(-17, 0, 0); keeper.moveTarget.copy(keeper.pos);
+    passer.pos.set(-2, 0, 0); passer.moveTarget.copy(passer.pos); passer.facing = Math.PI;
+    engine.ball.possess(passer.idx, passer.team);
+    engine.ball.glueTo(passer.pos, passer.facing, passer.vel);
+    const started = startAction(engine, passer, "pass_long", keeper.pos.clone(), keeper.idx);
+    for (let i = 0; i < 90 && engine.ball.possessedBy !== null; i++) {
+      const dt = 1 / 60; engine.clock += dt;
+      const frame = passer.anim.update(dt, 0, 0);
+      if (frame.contact) onContact(engine, passer, frame.contact);
+    }
+    let maxHeight = engine.ball.pos.y;
+    for (let i = 0; i < 20; i++) { engine.ball.step(1 / 60); maxHeight = Math.max(maxHeight, engine.ball.pos.y); }
+    unmute();
+    check("a long named return to the goalkeeper is a ground pass, never a lofted chip",
+      started && engine.passLog[0]?.receiver === keeper.idx && Math.abs(engine.ball.vel.y) < 1e-9 && maxHeight <= R + 0.001,
+      `started=${started} receiver=${engine.passLog[0]?.receiver} vertical=${engine.ball.vel.y.toFixed(3)} maxY=${maxHeight.toFixed(3)}`);
+    engine.dispose();
+  }
+
+  // ================= 8. A rushing opponent bypasses the keeper's hold time =================
+  const pressuredKeeper = (firstTouch: boolean, rushing: boolean, settle = false) => {
+    const engine = makeEngine(109);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(8, 0, p.idx % 2 ? 10 : -10); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); }
+    const keeper = engine.players[0], striker = engine.players[9];
+    keeper.pos.set(-17, 0, 0); keeper.moveTarget.copy(keeper.pos);
+    engine.players[4].pos.set(10, 0, 0); engine.players[4].moveTarget.copy(engine.players[4].pos);
+    striker.pos.set(rushing ? -14 : 0, 0, rushing ? 0 : 8);
+    striker.vel.set(rushing ? -7 : 0, 0, 0); striker.speed = rushing ? 7 : 0;
+    engine.ball.possess(keeper.idx, keeper.team); engine.ball.handsRestrictedTeam = keeper.team;
+    engine.ball.glueTo(keeper.pos, 0, keeper.vel);
+    if (firstTouch) startAction(engine, keeper, "first_touch");
+    engine.step(1 / 60);
+    const firstAction = keeper.anim.actionId, firstReason = keeper.decisionReason;
+    let restarts = 0, previousAction = firstAction, previousT = keeper.anim.actionT;
+    if (settle) for (let i = 0; i < 12; i++) {
+      engine.step(1 / 60);
+      if (previousAction === "pass_long" && keeper.anim.actionId === "pass_long" && keeper.anim.actionT + 1e-6 < previousT) restarts++;
+      previousAction = keeper.anim.actionId; previousT = keeper.anim.actionT;
+    }
+    const result = { action: firstAction, reason: firstReason, hold: keeper.holdT, restarts };
+    engine.dispose();
+    return result;
+  };
+  {
+    mute();
+    const rushed = pressuredKeeper(false, true, true);
+    const rushedAfterTouch = pressuredKeeper(true, true, true);
+    const unpressured = pressuredKeeper(false, false);
+    unmute();
+    check("keeper immediately chooses a long outlet when an opponent is sprinting at him",
+      rushed.action === "pass_long" && rushedAfterTouch.action === "pass_long" && rushed.reason.startsWith("GK PRESS"),
+      `normal=${rushed.action}, after first touch=${rushedAfterTouch.action}; ${rushed.reason}`);
+    check("pressured distribution advances continuously instead of restarting its wind-up",
+      rushed.restarts === 0 && rushedAfterTouch.restarts === 0,
+      `restarts=${rushed.restarts}/${rushedAfterTouch.restarts}`);
+    check("keeper keeps the normal hold time when no opponent is closing",
+      unpressured.action === null && unpressured.hold > 0 && unpressured.reason.startsWith("GK hold"),
+      `action=${unpressured.action} hold=${unpressured.hold.toFixed(3)} ${unpressured.reason}`);
+  }
+
+  // ================= 9. Keeper smothers a moving grounded 1v1 ball =================
+  {
+    const players = [
+      wp(0, 0, "GK", 0, -17, 0),
+      wp(1, 0, "DEF", 1, -6, -8), wp(2, 0, "DEF", 2, -6, 8), wp(3, 0, "MID", 3, 0, 0), wp(4, 0, "FWD", 4, 10, 0),
+      wp(5, 1, "GK", 0, 18.4, 0), wp(6, 1, "DEF", 1, 6, -8), wp(7, 1, "DEF", 2, 6, 8), wp(8, 1, "MID", 3, 0, 5),
+      wp(9, 1, "FWD", 4, -14.4, 0, -5, 0, true),
+    ];
+    const ai = new AIController(new SeededRandom(110), 110);
+    const decision = ai.think(players[0], 0, {
+      ballPos: new THREE.Vector3(-14.9, R, 0), ballVel: new THREE.Vector3(-5, 0, 0), ballOwner: 9, ballOwnerTeam: 1,
+      players, time: 10, half: 1, matchSeed: 110, ballKickAge: 1,
+    }, 10);
+    check("keeper starts the hands smother before the striker reaches point-blank range",
+      decision.action === "gk_catch", `${decision.action} · ${decision.reason}`);
+
+    mute();
+    const engine = makeEngine(111);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(10, 0, p.idx % 2 ? 11 : -11); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); }
+    const keeper = engine.players[0], striker = engine.players[9];
+    keeper.pos.set(-16.8, 0, 0); keeper.moveTarget.copy(keeper.pos); keeper.facing = 0;
+    striker.pos.set(-14.5, 0, 0); striker.moveTarget.copy(striker.pos); striker.facing = Math.PI;
+    striker.vel.set(-3, 0, 0); striker.speed = 3;
+    engine.ball.possess(striker.idx, striker.team); engine.ball.handsRestrictedTeam = null;
+    engine.ball.glueTo(striker.pos, striker.facing, striker.vel);
+    let sawCatch = false;
+    for (let i = 0; i < 60 && engine.ball.possessedBy !== keeper.idx; i++) {
+      engine.step(1 / 60);
+      if (keeper.anim.actionId === "gk_catch") sawCatch = true;
+    }
+    unmute();
+    check("grounded moving ball stays eligible for the contact-frame hands smother",
+      sawCatch && engine.ball.possessedBy === keeper.idx,
+      `sawCatch=${sawCatch} owner=${engine.ball.possessedBy}`);
+    engine.dispose();
+  }
+
   console.log(failures ? `\n${failures} FAILURE(S)` : "\nALL PASS");
   process.exit(failures ? 1 : 0);
 }
