@@ -9,6 +9,7 @@ import { aiEvent } from "./debug";
 import { captureOffsideAtKick, flagOffside } from "./offside";
 import { planNamedPass, recordPass } from "./passPlanning";
 import { setHumanPlayer } from "./roster";
+import { releaseRestartToTaker } from "./restarts";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -285,15 +286,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       p.restartTaker = false;
     } else if (++e.restartRetries >= 3) {
       // No valid receiver after 3 samples: give the taker the ball in play.
+      // Never clamp a throw-in / corner taker back onto the pitch: they stand
+      // outside the touchline by law, so use the buffer margin instead.
       e.restartLaunchedId = activeRestart.id;
       e.rules.pendingRestart = null;
-      p.restartTaker = false;
-      const inX = THREE.MathUtils.clamp(p.pos.x, -CONFIG.pitch.length / 2 + 1, CONFIG.pitch.length / 2 - 1);
-      const inZ = THREE.MathUtils.clamp(p.pos.z, -CONFIG.pitch.width / 2 + 1, CONFIG.pitch.width / 2 - 1);
-      p.pos.set(inX, 0, inZ);
-      e.ball.pos.set(inX, CONFIG.ball.radius, inZ);
-      e.ball.possess(p.idx, p.team);
-      aiEvent(e, `RESTART released to taker #${p.idx} after ${e.restartRetries} failed deliveries`);
+      releaseRestartToTaker(e, p);
     } else {
       // Restart delivery cancelled: retake promptly with a newly sampled target.
       e.restartStartedId = -1;

@@ -15,14 +15,21 @@ export function trackPossession(e: MatchHost) {
   const team = e.ball.ownerTeam;
   if (idx !== e.seenOwner) {
     e.possessionStartedAt = e.clock;
-    if (team !== null && e.seenOwnerTeam !== null && team !== e.seenOwnerTeam) {
-      e.transitionTeam = team;
-      e.transitionUntil = e.clock + CONFIG.tactics.transitionSeconds;
+    // A loose ball does not erase which team last had it. If seenOwnerTeam is
+    // nulled while the ball is free, the side that recovers a parry, deflection
+    // or tackle spill never starts an attacking transition even though
+    // possession changed hands. Only the owner index is cleared while free;
+    // the last-owning team survives until a new owner is established.
+    if (idx === null) {
+      e.seenOwner = null;
+    } else {
+      if (team !== null && e.seenOwnerTeam !== null && team !== e.seenOwnerTeam) {
+        e.transitionTeam = team;
+        e.transitionUntil = e.clock + CONFIG.tactics.transitionSeconds;
+      }
+      e.seenOwner = idx;
+      e.seenOwnerTeam = team;
     }
-    e.seenOwner = idx;
-    e.seenOwnerTeam = team;
-    if (e.possessionTicks.length > 400) e.possessionTicks.shift();
-    if (idx !== null && team !== null) e.possessionTicks.push({ idx, team });
   }
 }
 
