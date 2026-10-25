@@ -1,17 +1,18 @@
 // Main match engine — pitch, players, ball, rules, AI, input, cameras.
 import * as THREE from "three";
 import { CONFIG, FORMATIONS, RuleEvent } from "./config";
-import { AnimationController, clipExists, getClip, registerMotionAnimation } from "./anims";
+import { AnimationController, clipExists, getClip } from "./anims";
+import { getRegisteredMotionClips } from "./motion";
 import { createPlayerMesh, generateVariant, MeshFamily, PlayerRig } from "./playerMesh";
 import { Ball, estimateKickTravelTime, kickPowerForRange, kickRangeForPower } from "./ball";
 import { RulesEngine } from "./rules";
 import { AIController, PlayerStyle, WorldPlayer, WorldSnap, type PassFlight, type AIDecision } from "./ai";
 import { applyPose } from "./skeleton";
 import { createMatchSeed, SeededRandom, tieBreakHash } from "./random";
-import { FieldMotionClip, parseFieldMotionJSON, validateFieldMotionAgainstSkeleton } from "./motion";
+import { FieldMotionClip, parseFieldMotionText, registerFieldMotionClip, validateFieldMotionAgainstSkeleton } from "./motion";
 import { kickoffRestartViolation } from "./restartRules";
 import { passAimDot, passAimIsValid, predictReceiverRun, resolveNamedReceiver } from "./passing";
-import { onsideLimit, type SupportJob } from "./tactics";
+import { onsideLimit, type RunType, type SupportJob } from "./tactics";
 
 export interface EnginePlayer {
   idx: number; team: number; role: string; roleIdx: number;
@@ -25,6 +26,7 @@ export interface EnginePlayer {
   restartTaker: boolean;
   runSerial: number; style: PlayerStyle; lastActionSeed: number | null;
   supportJob?: SupportJob;
+  supportRun?: RunType;
   supportMode?: string;
   passOptions?: AIDecision["passOptions"];
 }
@@ -115,6 +117,14 @@ export class MatchEngine {
   private offsideTeam: number | null = null;
   private lastKnownOwnerTeam: number | null = null;
   private lastKnownOwnerIdx: number | null = null;
+  // Possession timing: how long the carrier has had the ball, and the window in
+  // which the team that just won it is in attacking transition.
+  private seenOwner: number | null = null;
+  private seenOwnerTeam: number | null = null;
+  possessionStartedAt = 0;
+  transitionTeam: number | null = null;
+  transitionUntil = 0;
+  possessionTicks: { idx: number; team: number | null }[] = [];
   selectedIdx = 4;
   gkHoldT = 0;
   restartAutoT = 0;
@@ -172,6 +182,11 @@ export class MatchEngine {
     this.resetPositions("kickoff");
     this.lastKnownOwnerTeam = this.ball.ownerTeam;
     this.lastKnownOwnerIdx = this.ball.possessedBy;
+    this.seenOwner = this.ball.possessedBy;
+    this.seenOwnerTeam = this.ball.ownerTeam;
+    this.possessionStartedAt = 0;
+    this.transitionUntil = 0;
+    this.transitionTeam = null;
   }
 
   // ---------------- world ----------------
@@ -345,12 +360,26 @@ export class MatchEngine {
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
   }
 
+  /** Imports one clip, or every clip in a `fieldmotion.pack.v1` bundle. */
+  importMotionPack(text: string, filename = "motion.json"): FieldMotionClip[] {
+    const parsed = parseFieldMotionText(text, filename);
+    const accepted: FieldMotionClip[] = [];
+    const problems: string[] = [];
+    for (const clip of parsed) {
+      const errors = validateFieldMotionAgainstSkeleton(clip);
+      if (errors.length) { problems.push(`${clip.id}: ${errors.join("; ")}`); continue; }
+      if (getRegisteredMotionClips().some((c) => c.id === clip.id)) { problems.push(`${clip.id}: already imported`); continue; }
+      registerFieldMotionClip(clip, { slot: clip.meta.tags.find((t) => t.startsWith("slot:"))?.slice(5) });
+      accepted.push(clip);
+    }
+    if (!accepted.length) throw new Error(problems.join(" | ") || "No usable clips in file");
+    if (problems.length) console.warn(`[motion] skipped ${problems.length} clip(s): ${problems.join(" | ")}`);
+    return accepted;
+  }
+
   importMotionJSON(text: string, filename = "motion.json", clipId?: string): FieldMotionClip {
-    const clip = parseFieldMotionJSON(text, filename, clipId);
-    const errors = validateFieldMotionAgainstSkeleton(clip);
-    if (errors.length) throw new Error(errors.join("; "));
-    registerMotionAnimation(clip);
-    return clip;
+    const clips = this.importMotionPack(text, filename);
+    return clips.find((c) => c.id === clipId) ?? clips[0];
   }
 
   playClipOnSelected(id: string): boolean {
@@ -466,6 +495,8 @@ export class MatchEngine {
       })),
       time: this.clock, half: this.rules.half, matchSeed: this.matchSeed,
       ballKickAge: this.ball.kickAge,
+      ownerSince: this.possessionStartedAt,
+      transitionUntil: this.transitionTeam === this.ball.ownerTeam ? this.transitionUntil : 0,
       passFlight: this.passFlight, lastPass: this.lastPass,
     };
     this.frameWorld = snap;
@@ -587,7 +618,10 @@ export class MatchEngine {
       // Turn-in-place: never for the carrier or keeper (its root yaw fought the facing
       // steering and produced the side-to-side spin), and never over a pending kick.
       const carrying = this.ball.possessedBy === p.idx;
-      if (Math.abs(dYaw) > 1.9 && p.speed < 1.2 && !p.anim.busy && live && !carrying && p.role !== "GK" && !p.pendingKick) {
+      // Turn-in-place is a stationary animation. A player who is trying to run must
+      // turn while accelerating instead, or a mid-run change of direction freezes him
+      // for the length of the clip (the "everyone holds position" symptom).
+      if (Math.abs(dYaw) > 1.9 && p.speed < 1.2 && p.desiredSpeed < 1.6 && !p.anim.busy && live && !carrying && p.role !== "GK" && !p.pendingKick) {
         this.startAction(p, dYaw > 0 ? "turn_left" : "turn_right");
       }
       const rootTurning = p.anim.actionId === "turn_left" || p.anim.actionId === "turn_right" || p.anim.actionId === "turn_180";
@@ -658,6 +692,7 @@ export class MatchEngine {
         this.possessionCheck();
         this.outGoalCheck();
       }
+      this.trackPossession();
       this.restartAuto(dt);
     } else {
       // freeze ball at restart spot during setup
@@ -1471,7 +1506,7 @@ export class MatchEngine {
     p.moveTarget.copy(dec.moveTarget);
     p.desiredSpeed = Math.min(dec.desiredSpeed, p.role === "GK" ? CONFIG.player.gkSprintSpeed : CONFIG.ai.maxSprint);
     p.decisionReason = dec.reason; p.utilities = dec.utilities;
-    p.supportJob = dec.supportJob; p.supportMode = dec.supportMode; p.passOptions = dec.passOptions;
+    p.supportJob = dec.supportJob; p.supportRun = dec.runType; p.supportMode = dec.supportMode; p.passOptions = dec.passOptions;
     if (dec.supportJob === "runner" && this.ball.possessedBy !== null && this.ball.ownerTeam === p.team) {
       const sign = this.ai.attackSign(p.team, this.rules.half);
       const room = onsideLimit(snap, p.team) - CONFIG.ai.offsideBuffer - p.pos.x * sign;
@@ -1832,6 +1867,27 @@ export class MatchEngine {
     this.humanIdx = p.idx;
     p.isHuman = true;
     this.selectedIdx = p.idx;
+  }
+
+  /**
+   * Central possession clock. A change of owner starts the carrier's "time on the
+   * ball" timer; a change of *team* opens an attacking-transition window, which the
+   * tactics layer reads to allow riskier, forward-first decisions.
+   */
+  private trackPossession() {
+    const idx = this.ball.possessedBy;
+    const team = this.ball.ownerTeam;
+    if (idx !== this.seenOwner) {
+      this.possessionStartedAt = this.clock;
+      if (team !== null && this.seenOwnerTeam !== null && team !== this.seenOwnerTeam) {
+        this.transitionTeam = team;
+        this.transitionUntil = this.clock + CONFIG.tactics.transitionSeconds;
+      }
+      this.seenOwner = idx;
+      this.seenOwnerTeam = team;
+      if (this.possessionTicks.length > 400) this.possessionTicks.shift();
+      if (idx !== null && team !== null) this.possessionTicks.push({ idx, team });
+    }
   }
 
   private possessionCheck() {

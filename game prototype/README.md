@@ -100,7 +100,19 @@ Motion Lab accepts `.json` files shaped like:
 }
 ```
 
-`frames[].q` (bind-direction → tracked-direction quaternions) is preferred; if omitted, quaternions are derived from `frames[].j`. Every clip is validated against the shared 21-bone contract and becomes available to the animation controller and Motion Lab preview. The sample at `public/motions/sample_fieldmotion.json` is loadable from Motion Lab.
+`frames[].j` (joint positions in `jointOrder`) is authoritative: the importer retargets world limb directions onto the game rig's bones, which keeps limb lengths exact and makes an A-pose source (arms angled out) and this rig (arms hanging) resolve to the same pose. `frames[].q` is accepted and validated for tooling compatibility. Every clip is validated against the shared 21-bone contract and becomes available to the animation controller and Motion Lab preview. The sample at `public/motions/sample_fieldmotion.json` is loadable from Motion Lab.
+
+### Generated game pack
+
+`public/motions/game-motion-pack.json` is produced by the animation generator in `tool/`
+and holds 32 clips authored on the same skeleton — locomotion cycles, passes, shots,
+header, tackles, keeper actions, restarts, turns and recoveries. Each clip carries
+`metadata.slot`, so the game loads the pack on startup (`loadGeneratedMotionPack()` in
+`src/main.tsx`) and every clip is bound to the gameplay action it drives; the match plays
+generated animation with contact at the authored contact frames. Motion Lab's **Load
+generated game pack** button reports the bindings, and any pack can be dragged in by hand. Regenerating, the clip ↔ slot table, the root-motion
+axis convention and the automated checks are documented in
+[`docs/MOTION-PIPELINE.md`](docs/MOTION-PIPELINE.md).
 
 ## Architecture
 
@@ -120,10 +132,13 @@ src/game/
   restartRules.ts pure kickoff legality checks (regression-tested)
   engine.ts      world, input, collisions, restarts, cameras, snapshot
 src/ui/          Rush Arena menu, scorebug, HUD, data drawer, panels
+  gameclip.ts (in tool/)       generated clip specs: FK from joint angles + slot metadata
 scripts/selftest.ts            headless checks: rules, RNG, FieldMotion, physics, AI awareness
 scripts/kickoff-regression.ts  headless kickoff legality checks
 scripts/support-regression.ts mirrored reset/width/run/shooting and keeper-foot scenarios
 scripts/support-match.ts      complete seeded matches and exact trajectory replay checks
+scripts/attacking-runs.ts     regression suite for off-ball runs, progressive intent, transition
+scripts/motion-pipeline.ts    generator → pack → slot bindings → controller → live match checks
 ```
 
 ## AI instrumentation & deterministic reproduction
@@ -174,9 +189,15 @@ Covers kickoff/half-time/full-time flow, cross-seed determinism, FieldMotion par
 - Runs stage onside before a pass; `PassFlight` commits the named receiver to its predicted reception point after release. Other teammates maintain support rather than all chasing the free ball. Prediction uses bounded acceleration toward the selected run, not an arbitrary through-ball offset.
 - Open shots at the edge of the area and clear close chances take priority over safe square passes. Blocked lanes or tight angles still permit recycling; there is no forced shot/goal probability. Cooldowns are checked per available shot clip.
 - Novelty history records accepted actions, not every repeated evaluation of the same action. Thus a good chance is not penalized just because the AI has been watching it.
+- **Space scanning and run types.** Every support candidate is scored on vacant ground ahead, not only on being unmarked. Runs are classified as `check` (drop short into space to offer a safe outlet under pressure), `spin` (attack the space behind the defensive line, clamped onside) or `drive` (carry the run into midfield space), plus `hold` for a support position. A committed run is held for `CONFIG.tactics.runCommitSeconds` and re-led when the player reaches the target instead of being re-picked every tick.
+- **Run trigger.** `readRunTrigger` fires when the carrier is facing forward (dot with the attack direction), has more than `runTriggerTimeOnBall` seconds on the ball and either has room or an open forward lane. While the trigger is off, spin/drive runs are penalised and the short `check` is preferred — runs happen when the carrier can actually use them.
+- **Attacking transition.** A change of possession team opens a `transitionUntil` window (`transitionSeconds`). During it the plan reports phase `transition`: support runners push forward, the pivot may drive instead of holding central cover, and the carrier's phase weights make progression the dominant term, with the through ball and forward carry scored first.
+- **Progression is a first-class utility.** The carrier scores shots, passes and carries on the same scale: shot utility from range, lane and goal opening; pass utility from lane safety, receiver space, forward gain, line breaks, penetration and switch bonuses minus crowding and hazard; carry utility from forward space. A partially blocked shooting lane (`shotPartialLane`) is still a shot, and a blocked forward lane is scored low rather than discarded.
 
 Open **Data** in a match to inspect each player's job, position target, receiver-option lane/space/utility scores, and actual recycle, penetration, shot and keeper-foot-control counters. `?debug=ai` retains the per-frame control-path trace.
 
 `support-regression.ts` covers both teams and halves, every outfield carrier role, pressured pivot resets, keeper-pass release/control, marked-wide alternatives, onside staging/post-release runs, open-edge shots and actual player movement into central cover. `support-match.ts` runs seeds 1234, 777 and 42 to FULLTIME, replays 1234, and compares actual pass trajectories and final state, not just debug text. It also reports **actual** central-cover occupancy separately from planned cover; neither is assumed to be 100% during transitions.
+
+`npm run verify:motion` builds the animation pack from `tool/src/gameclip.ts` and checks the whole pipeline: parse, slot binding, retarget fidelity, locomotion/action override, contact timing, root motion and a live match on the generated clips (see `docs/MOTION-PIPELINE.md`).
 
 Optional browser smoke test (Playwright is a test-only tool, not a game dependency): install with `npm install --no-save --package-lock=false playwright`, then `npx playwright install --with-deps chromium`. Start Vite on port 5178 and run `node scripts/browser-smoke.mjs`. Set `TEST_URL` to use another server. It checks spectator and player startup, the tactics drawer, and pause/resume; screenshots go to `.test-artifacts/`.

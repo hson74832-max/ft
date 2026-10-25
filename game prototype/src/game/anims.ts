@@ -3,15 +3,70 @@
 import * as THREE from "three";
 import { ANIMATION_CATALOGUE, ClipMeta, CONFIG } from "./config";
 import { Pose, emptyPose, blendPoses } from "./skeleton";
-import { FieldMotionClip, getFieldMotionCatalogue, getFieldMotionClip, registerFieldMotionClip, sampleFieldMotion } from "./motion";
+import { FieldMotionClip, getBoundFieldMotionClip, getFieldMotionCatalogue, getFieldMotionClip, registerFieldMotionClip, sampleFieldMotion } from "./motion";
 
 export function getClip(id: string): ClipMeta {
-  const c = ANIMATION_CATALOGUE.find((c) => c.id === id) ?? getFieldMotionClip(id)?.meta;
+  // A clip bound to this slot contributes its own timing (duration, contact frame,
+  // interrupt window), so a produced 0.52 s pass does not play at 0.45 s.
+  const bound = getBoundFieldMotionClip(id)?.meta;
+  const c = bound ?? ANIMATION_CATALOGUE.find((c) => c.id === id) ?? getFieldMotionClip(id)?.meta;
   if (!c) throw new Error(`clip not found: ${id}`);
   return c;
 }
 export function clipExists(id: string) { return ANIMATION_CATALOGUE.some((c) => c.id === id) || !!getFieldMotionClip(id); }
 export function getAnimationCatalogue(): ClipMeta[] { return [...ANIMATION_CATALOGUE, ...getFieldMotionCatalogue()]; }
+
+/**
+ * Imported clips bound to a locomotion slot replace the procedural cycle for that
+ * speed band. Bands are blended by the same speed weights the procedural blend
+ * space uses, so a generated walk/jog/sprint set blends in without a recompile.
+ */
+const LOCOMOTION_SLOTS = ["idle", "walk", "jog", "sprint", "jockey"] as const;
+type LocomotionSlot = typeof LOCOMOTION_SLOTS[number];
+
+export function hasBoundLocomotion(): boolean {
+  return LOCOMOTION_SLOTS.some((slot) => getBoundFieldMotionClip(slot));
+}
+
+function locomotionWeights(speed: number, jockey: boolean): Record<LocomotionSlot, number> {
+  const idle = THREE.MathUtils.clamp(1 - speed / 1.0, 0, 1);
+  const walk = THREE.MathUtils.clamp(1 - Math.abs(speed - 1.4) / 1.6, 0, 1);
+  const jog = THREE.MathUtils.clamp(1 - Math.abs(speed - 4.0) / 1.6, 0, 1);
+  const sprint = THREE.MathUtils.clamp((speed - 5.0) / 2.2, 0, 1);
+  return { idle, walk, jog, sprint, jockey: jockey ? 1 : 0 };
+}
+
+/**
+ * Sample every bound locomotion cycle at the same phase and blend by speed.
+ * Returns null when nothing is bound (the procedural blend space is untouched).
+ */
+function boundLocomotionPose(p: LocoParams): Pose | null {
+  const bound = LOCOMOTION_SLOTS.map((slot) => ({ slot, clip: getBoundFieldMotionClip(slot) }))
+    .filter((entry): entry is { slot: LocomotionSlot; clip: FieldMotionClip } => !!entry.clip);
+  if (!bound.length) return null;
+  const weights = locomotionWeights(p.speed, p.jockey);
+  const cycle = ((p.phase / (Math.PI * 2)) % 1 + 1) % 1;
+  const entries = bound.map((entry) => ({ ...entry, weight: weights[entry.slot] }));
+  const total = entries.reduce((sum, e) => sum + e.weight, 0);
+  const selected = total > 0.02 ? entries : [(() => {
+    // Between bands (or stopped with only a cycle bound): use the nearest cycle.
+    const nearest = [...entries].sort((a, b) => Math.abs(weights[a.slot] - 1) - Math.abs(weights[b.slot] - 1))[0];
+    return { ...nearest, weight: 1 };
+  })()];
+  const normaliser = selected.reduce((sum, e) => sum + e.weight, 0) || 1;
+  const out = emptyPose();
+  for (const entry of selected) {
+    const time = cycle * entry.clip.duration;
+    const sampled = sampleFieldMotion(entry.clip, time).pose;
+    const w = entry.weight / normaliser;
+    for (const [bone, euler] of sampled) {
+      const acc = out.get(bone) ?? new THREE.Euler();
+      acc.set(acc.x + euler.x * w, acc.y + euler.y * w, acc.z + euler.z * w);
+      out.set(bone, acc);
+    }
+  }
+  return out;
+}
 
 export function registerMotionAnimation(clip: FieldMotionClip): void {
   const motion = getFieldMotionClip(clip.id);
@@ -26,6 +81,9 @@ function E(x = 0, y = 0, z = 0) { return new THREE.Euler(x * D2R, y * D2R, z * D
 export interface LocoParams { speed: number; dirAngle: number; phase: number; fatigue: number; jockey: boolean; }
 
 export function locomotionPose(p: LocoParams): Pose {
+  // Imported cycles (generated or tracked) take precedence band by band.
+  const imported = boundLocomotionPose(p);
+  if (imported) return imported;
   const pose = emptyPose();
   const s = p.speed;
   // select band blend
@@ -92,6 +150,9 @@ export function locomotionPose(p: LocoParams): Pose {
 function phase01(t: number, d: number) { return THREE.MathUtils.clamp(t / d, 0, 1); }
 
 export function actionPose(id: string, t: number, dur: number): Pose {
+  // A produced clip bound to this slot replaces the procedural action entirely.
+  const bound = getBoundFieldMotionClip(id);
+  if (bound) return sampleFieldMotion(bound, t).pose;
   const motion = getFieldMotionClip(id);
   if (motion) return sampleFieldMotion(motion, t).pose;
   const k = phase01(t, dur);
@@ -319,6 +380,8 @@ export function rootMotionDelta(id: string, t01: number, dt: number, _facing = 0
 export interface AnimDebug { state: string; clip: string; nt: number; blend: number; speed: number; contactFired: boolean; weights: string; cooldowns: string; }
 
 export class AnimationController {
+  /** Clip most recently sampled by `update` (action id, or the locomotion band name). */
+  lastClip = "idle";
   actionId: string | null = null;
   actionT = 0;
   actionDur = 0;
@@ -407,11 +470,15 @@ export class AnimationController {
       pose = actionPose(this.actionId, this.actionT, this.actionDur);
       // root motion
       if (meta.rootMotion) {
-        const motion = getFieldMotionClip(this.actionId);
+        const motion = getBoundFieldMotionClip(this.actionId) ?? getFieldMotionClip(this.actionId);
         if (motion) {
           const current = sampleFieldMotion(motion, this.actionT).root;
           const previous = sampleFieldMotion(motion, Math.max(0, this.actionT - dt)).root;
-          rootDelta = { dx: current.x - previous.x, dz: current.z - previous.z, dYaw: 0 };
+          // FieldMotion is authored Y-up with +Z forward and +X to the subject's
+          // right; the engine integrates root motion as forward/lateral in facing
+          // space. Previously +X was fed in as "forward", so a generated or tracked
+          // clip's travel went sideways and every root-motion clip looked static.
+          rootDelta = { dx: current.z - previous.z, dz: -(current.x - previous.x), dYaw: 0 };
         } else rootDelta = rootMotionDelta(this.actionId, nt, dt, 0);
       }
       // contact event
@@ -437,6 +504,7 @@ export class AnimationController {
       this.state = "locomotion";
     }
 
+    this.lastClip = clip;
     // crossfade from previous
     if (this.prevPose && this.blend < 1) pose = blendPoses(this.prevPose, pose, THREE.MathUtils.smoothstep(this.blend, 0, 1));
     else if (this.blend >= 1) this.prevPose = null;
