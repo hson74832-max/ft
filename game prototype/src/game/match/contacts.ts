@@ -98,6 +98,7 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       releaseToKick(e, p);
       e.ball.kick(dirTo(tgt), kp.header, 0.2);
       ballReleasedByAction = true;
+      if (!activeRestart) e.openPlayKickCount++;
       break;
     }
     case "tackle_stand": case "tackle_slide": {
@@ -111,8 +112,16 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const maxReach = CONFIG.player.tackleRadius + (action === "tackle_slide" ? 0.9 : 0.75);
       const ballDist = Math.hypot(e.ball.pos.x - p.pos.x, e.ball.pos.z - p.pos.z);
       const villainClose = !!carrier && carrier.team !== p.team && ballDist < footReach;
+      // Direction from tackler to ball vs tackler's facing: a tackler facing away from
+      // the ball (from behind/blind side) cannot lawfully reach the ball first.
+      const toBallX = e.ball.pos.x - p.pos.x, toBallZ = e.ball.pos.z - p.pos.z;
+      const toBallLen = Math.hypot(toBallX, toBallZ);
+      const toBallNx = toBallLen > 1e-4 ? toBallX / toBallLen : 0;
+      const toBallNz = toBallLen > 1e-4 ? toBallZ / toBallLen : 0;
+      const facingDot = Math.sin(p.facing) * toBallNx + Math.cos(p.facing) * toBallNz;
+      const facingAway = facingDot < -0.3; // more than ~107° off facing the ball
       const ballClose = ballDist < footReach + 0.2;
-      if (carrier && villainClose) {
+      if (carrier && villainClose && !facingAway) {
         // Clean tackle win: tackler claims the ball and stumbles the carrier
         e.ball.possess(p.idx, p.team);
         e.ball.vel.set(0, 0, 0);

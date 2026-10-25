@@ -78,6 +78,7 @@ export function resetPositions(e: MatchHost, kind: string) {
   e.restartAutoT = 0.6;
   e.ai.nextThink.clear();
   e.ai.lastDecision.clear();
+  e.lastAppliedDecision.clear();
 }
 
 /** Shape the pitch for the pending restart: taker, runners, defenders. */

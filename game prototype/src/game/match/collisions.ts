@@ -50,6 +50,8 @@ export function resolvePlayerCollisions(e: MatchHost) {
 export function resolveBallPlayerCollisions(e: MatchHost) {
   if (e.ball.possessedBy !== null || e.ball.pos.y > 1.35) return;
   const R = CONFIG.ball.radius;
+  // Find the closest overlapping player rather than the first in array order.
+  let hit: EnginePlayer | null = null, hitDist = Infinity, hitNx = 0, hitNz = 0;
   for (const p of e.players) {
     const dx = e.ball.pos.x - p.pos.x, dz = e.ball.pos.z - p.pos.z;
     const distance = Math.hypot(dx, dz);
@@ -62,31 +64,34 @@ export function resolveBallPlayerCollisions(e: MatchHost) {
       continue;
     }
     const minimum = (p.role === "GK" ? 0.46 : 0.4) + R;
-    if (distance >= minimum) continue;
-    const nx = distance > 1e-4 ? dx / distance : 1, nz = distance > 1e-4 ? dz / distance : 0;
-    e.ball.pos.x = p.pos.x + nx * minimum;
-    e.ball.pos.z = p.pos.z + nz * minimum;
-    const toward = e.ball.vel.x * nx + e.ball.vel.z * nz;
-    if (toward < 0 && p.role === "GK" && e.ball.handsRestrictedTeam !== p.team && e.ball.speed < CONFIG.ai.gkCatchSpeed && e.ball.pos.y < 2.0 && p.stumbleT <= 0) {
-      // Keeper got the body behind a catchable ball: gathered, not spilled.
-      e.ball.possess(p.idx, p.team);
-      e.ball.vel.set(0, 0, 0);
-      p.holdT = 0;
-      e.offsideCandidates.clear(); e.offsideTeam = null;
-      aiEvent(e, `GK CATCH #${p.idx} (body behind ball) · ${(-toward).toFixed(1)} m/s`);
-      e.rules.emit("SAVE", `GK CATCH by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
-      return;
-    }
-    if (toward < 0) {
-      // Body deflection: restitution ~0.25 off a torso/legs (energy absorbed).
-      e.ball.vel.x -= 1.25 * toward * nx;
-      e.ball.vel.z -= 1.25 * toward * nz;
-      if (p.role === "GK" && -toward > 8) {
-        aiEvent(e, `GK PARRY #${p.idx} (body block) · ${(-toward).toFixed(1)} m/s`);
-        e.rules.emit("SAVE", `GK body block by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
-      }
-    }
-    e.ball.lastTouch = p.idx; e.ball.lastTouchTeam = p.team;
-    break;
+    if (distance >= minimum || distance >= hitDist) continue;
+    hit = p; hitDist = distance;
+    hitNx = distance > 1e-4 ? dx / distance : 1;
+    hitNz = distance > 1e-4 ? dz / distance : 0;
   }
+  if (!hit) return;
+  const p = hit;
+  e.ball.pos.x = p.pos.x + hitNx * ((p.role === "GK" ? 0.46 : 0.4) + R);
+  e.ball.pos.z = p.pos.z + hitNz * ((p.role === "GK" ? 0.46 : 0.4) + R);
+  const toward = e.ball.vel.x * hitNx + e.ball.vel.z * hitNz;
+  if (toward < 0 && p.role === "GK" && e.ball.handsRestrictedTeam !== p.team && e.ball.speed < CONFIG.ai.gkCatchSpeed && e.ball.pos.y < 2.0 && p.stumbleT <= 0) {
+    // Keeper got the body behind a catchable ball: gathered, not spilled.
+    e.ball.possess(p.idx, p.team);
+    e.ball.vel.set(0, 0, 0);
+    p.holdT = 0;
+    e.offsideCandidates.clear(); e.offsideTeam = null;
+    aiEvent(e, `GK CATCH #${p.idx} (body behind ball) · ${(-toward).toFixed(1)} m/s`);
+    e.rules.emit("SAVE", `GK CATCH by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
+    return;
+  }
+  if (toward < 0) {
+    // Body deflection: restitution ~0.25 off a torso/legs (energy absorbed).
+    e.ball.vel.x -= 1.25 * toward * hitNx;
+    e.ball.vel.z -= 1.25 * toward * hitNz;
+    if (p.role === "GK" && -toward > 8) {
+      aiEvent(e, `GK PARRY #${p.idx} (body block) · ${(-toward).toFixed(1)} m/s`);
+      e.rules.emit("SAVE", `GK body block by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
+    }
+  }
+  e.ball.lastTouch = p.idx; e.ball.lastTouchTeam = p.team;
 }
