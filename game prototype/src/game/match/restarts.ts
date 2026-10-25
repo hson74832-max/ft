@@ -96,10 +96,26 @@ export function resetPositions(e: MatchHost, kind: string) {
     }
   }
   // A manual mid-match reset (or a kickoff re-stage) must not leave restart
-  // bookkeeping dangling behind a setup that no longer exists.
+  // bookkeeping dangling behind a setup that no longer exists. The warning latch
+  // belongs to the restart id: re-stamping the kickoff with a fresh id while the
+  // old warning is still held silently swallows the next "restart delayed" notice
+  // and leaves the AI waiting on a trigger it has already been told about.
   e.restartStartedId = -1; e.restartLaunchedId = -1; e.restartRetries = 0; e.restartContactT = 0;
+  e.warnedRestartId = -1;
   if (e.rules.pendingRestart && e.rules.pendingRestart.kind !== "kickoff") e.rules.pendingRestart = null;
   e.restartAutoT = 0.6;
+  // Possession bookkeeping belongs to the old phase. A kickoff or goal re-stage that
+  // keeps the pre-goal owner (and the team that had it) makes the next tackle spill
+  // compare against a stale team, so a routine spill opens a phantom transition
+  // window and the AI reacts as if a turnover had just happened. The staged kickoff
+  // keeps the ball with its taker, so seed the records from the ball itself.
+  e.lastKnownOwnerIdx = e.ball.possessedBy;
+  e.lastKnownOwnerTeam = e.ball.ownerTeam;
+  e.seenOwner = e.ball.possessedBy;
+  e.seenOwnerTeam = e.ball.ownerTeam;
+  e.possessionStartedAt = e.clock;
+  e.transitionTeam = null;
+  e.transitionUntil = 0;
   e.ai.resetDecisions();
   e.lastAppliedDecision.clear();
   seedPerception(e);
@@ -599,7 +615,14 @@ export function restartAuto(e: MatchHost, dt: number) {
         stuck.pendingKick = null;
         stuck.restartTaker = false;
         e.ball.release();
-        e.ball.pos.set(stuck.pos.x, CONFIG.ball.radius, stuck.pos.z);
+        // A throw-in or corner taker stands legally outside the touchline. Releasing
+        // the ball at his feet put it out of play, so the very next frame awarded a
+        // throw-in to the opponent: the clamp keeps the released ball on the pitch.
+        e.ball.pos.set(
+          THREE.MathUtils.clamp(stuck.pos.x, -CONFIG.pitch.length / 2 + 0.4, CONFIG.pitch.length / 2 - 0.4),
+          CONFIG.ball.radius,
+          THREE.MathUtils.clamp(stuck.pos.z, -CONFIG.pitch.width / 2 + 0.4, CONFIG.pitch.width / 2 - 0.4),
+        );
         e.ball.vel.set(0, 0, 0);
       }
       e.restartStartedId = -1;
@@ -704,7 +727,14 @@ export function releaseRestartToTaker(e: MatchHost, p: EnginePlayer) {
   const inX = THREE.MathUtils.clamp(p.pos.x, -halfX - margin, halfX + margin);
   const inZ = THREE.MathUtils.clamp(p.pos.z, -halfZ - margin, halfZ + margin);
   p.pos.set(inX, 0, inZ);
-  e.ball.pos.set(inX, CONFIG.ball.radius, inZ);
+  // The taker may legally stand outside the touchline (a throw-in), but the ball
+  // being released into play may not: put it at the nearest point on the pitch, or
+  // the out-of-bounds check hands the restart straight to the opponent.
+  e.ball.pos.set(
+    THREE.MathUtils.clamp(inX, -halfX, halfX),
+    CONFIG.ball.radius,
+    THREE.MathUtils.clamp(inZ, -halfZ, halfZ),
+  );
   e.ball.vel.set(0, 0, 0);
   e.ball.possess(p.idx, p.team);
   aiEvent(e, `RESTART released to taker #${p.idx} after failed deliveries`);

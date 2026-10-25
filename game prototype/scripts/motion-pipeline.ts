@@ -6,7 +6,9 @@
 // Builds the animation pack straight from tool/src/gameclip.ts, imports it exactly the
 // way the game does, and asserts that the prototype plays it: slot bindings, skeleton
 // validity, retarget fidelity, locomotion and action overrides, ball-contact timing, root
-// motion direction, and a live match running on the generated clips.
+// motion direction, and a live match running on the generated clips. It also proves that
+// a clip with a zero (or non-finite) duration is refused at registration instead of
+// reaching the sampler, where `time % duration` never resolves to a frame.
 import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,7 +17,7 @@ import { buildGameMotionPack } from "../../tool/src/gameclip";
 import { ANIMATION_CATALOGUE, SKELETON_CONTRACT } from "../src/game/config";
 import {
   FIELDMOTION_BONE_MAP, bindFieldMotionClip, clearFieldMotionRegistry, getBoundFieldMotionClip,
-  getRegisteredMotionClips, getSlotBindings, parseFieldMotionText, registerFieldMotionClip,
+  getFieldMotionClip, getRegisteredMotionClips, getSlotBindings, parseFieldMotionText, registerFieldMotionClip,
   rigBoneWorldDirection, sampleFieldMotion, validateFieldMotionAgainstSkeleton,
 } from "../src/game/motion";
 import { AnimationController, actionPose, getClip, hasBoundLocomotion, locomotionPose } from "../src/game/anims";
@@ -55,6 +57,30 @@ const missing = pack.clips
   .filter((slot) => !bindings.some((b) => b.slot.id === slot));
 check("each clip binds to its gameplay slot", missing.length === 0, missing.join(", ") || `${bindings.length} slots`);
 check("every slot is a real catalogue slot", bindings.every((b) => ANIMATION_CATALOGUE.some((c) => c.id === b.slot.id)));
+
+// ---- 2b. a zero-length clip is rejected before it can wedge the sampler ---------
+{
+  const source = clips[0];
+  const rejectOf = (duration: number, label: string) => {
+    const broken = {
+      ...source,
+      id: `broken_duration_${label}`,
+      duration,
+      meta: { ...source.meta, id: `broken_duration_${label}`, duration },
+    };
+    let threw = false;
+    try { registerFieldMotionClip(broken); } catch { threw = true; }
+    return { threw, registered: !!getFieldMotionClip(broken.id) };
+  };
+  const zero = rejectOf(0, "zero");
+  const negative = rejectOf(-0.5, "negative");
+  const notANumber = rejectOf(NaN, "nan");
+  check("a clip with a zero-length duration is rejected at registration",
+    zero.threw && !zero.registered, zero.threw ? "refused" : "accepted");
+  check("negative and non-finite clip durations are rejected too",
+    negative.threw && !negative.registered && notANumber.threw && !notANumber.registered,
+    `negative ${negative.threw ? "refused" : "accepted"}, NaN ${notANumber.threw ? "refused" : "accepted"}`);
+}
 
 // ---- 3. retarget fidelity -----------------------------------------------------
 let worstAngle = 0;

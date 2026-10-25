@@ -111,7 +111,7 @@ export default function App() {
     const poll = () => {
       const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
       for (const pad of pads) {
-        if (!pad) continue;
+        if (!pad || !pad.buttons) continue;
         const pressed = pad.buttons[9]?.pressed ?? false;
         if (pressed && !startLatch) setPaused((p) => !p);
         startLatch = pressed;

@@ -182,8 +182,18 @@ export function kickRangeForPower(power: number, loft: number, startHeight: numb
   return state.pos.x;
 }
 
-/** Numerically estimate arrival time with the same ball-stepper used in play. */
+/**
+ * Numerically estimate arrival time with the same ball-stepper used in play.
+ *
+ * When the ball stalls short of the target it cannot reach it at all. The old
+ * fallback was a straight line `distance / power` that ignored drag, so every slow
+ * lofted delivery — the ones where drag matters most — was reported as arriving
+ * early and the AI aimed behind the runner. Report the 8 s horizon instead: a pass
+ * that will not get there must not look like a quick one.
+ */
 export function estimateKickTravelTime(distance: number, power: number, loft: number, startHeight: number = B.radius): number {
+  // Nothing usable to measure: report the horizon rather than an instant arrival.
+  if (!Number.isFinite(distance) || !Number.isFinite(power)) return 8;
   const state: BallState = {
     pos: new THREE.Vector3(0, Math.max(B.radius, startHeight), 0),
     vel: new THREE.Vector3(),
@@ -196,7 +206,8 @@ export function estimateKickTravelTime(distance: number, power: number, loft: nu
     if (state.pos.x >= distance) return i * dt;
     if (state.vel.length() < 0.15) break;
   }
-  return Math.min(8, distance / Math.max(0.5, power * 0.55));
+  // The same 8 s window the simulation searched: unreachable, not "soon".
+  return 8;
 }
 
 export class Ball {

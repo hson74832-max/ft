@@ -1029,11 +1029,16 @@ export class AIController {
   }
 
   private goalkeeperDecision(
-    p: WorldPlayer, mates: WorldPlayer[], snap: WorldSnap, _now: number,
+    p: WorldPlayer, mates: WorldPlayer[], snap: WorldSnap, now: number,
     ownGoal: THREE.Vector3, atkGoal: THREE.Vector3, noise: (scale?: number) => number,
     rng: SeededRandom,
   ): AIDecision {
-    if (!p.hasBall && snap.passFlight?.receiver === p.idx && snap.ballOwner === null) {
+    // Committing to a named delivery is now bounded: the keeper only leaves his arc
+    // while the pass is genuinely live (owned by nobody, his team's, inside its
+    // flight window). A pass that misses, expires or rolls past used to keep him
+    // running at the old landing spot forever with the goal empty behind him.
+    if (!p.hasBall && snap.ballOwner === null && snap.passFlight?.receiver === p.idx
+      && snap.passFlight.team === p.team && now <= snap.passFlight.expiresAt) {
       return { moveTarget: snap.passFlight.target.clone(), desiredSpeed: CONFIG.player.runSpeed, action: null,
         reason: "GK RECEIVE: prepare feet for the recycling pass", utilities: { receive: 1 }, urgent: true };
     }

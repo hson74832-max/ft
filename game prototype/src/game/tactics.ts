@@ -115,7 +115,11 @@ export function onsideLimit(snap: WorldSnap, team: number): number {
   if (!CONFIG.ai.offside) return CONFIG.pitch.length / 2;
   const sign = attackDirection(team, snap.half);
   const defenders = snap.players.filter((p) => p.team !== team).map((p) => p.pos.x * sign).sort((a, b) => b - a);
-  return Math.max(0, snap.ballPos.x * sign, defenders[1] ?? 0);
+  // No second-last defender (a red card, a custom roster): there is no offside line
+  // to be behind. The keeper-only fallback of 0 pinned every attacker to the halfway
+  // line and killed the through-ball exactly when the opponent was down to ten —
+  // the same "default beyond the pitch" the offside judge uses.
+  return Math.max(0, snap.ballPos.x * sign, defenders[1] ?? CONFIG.pitch.length / 2);
 }
 
 /**

@@ -47,8 +47,15 @@ export function predictReceiverRun(
 ): THREE.Vector3 {
   const point = position.clone().setY(0);
   const v = velocity.clone().setY(0).clampLength(0, maxSpeed);
-  for (let elapsed = 0; elapsed < travelTime; elapsed += 1 / 60) {
-    const dt = Math.min(1 / 60, travelTime - elapsed);
+  // The travel time comes out of the ball physics. Infinity never satisfies
+  // `elapsed < travelTime`, so this 1/60 s accumulation loop would never terminate and
+  // the whole match would freeze. Clamp to the 8 s horizon `estimateKickTravelTime`
+  // searches (an infinite estimate means "the longest flight we model"; NaN predicts
+  // nothing) and count the steps independently of the float accumulation.
+  const horizon = Number.isNaN(travelTime) ? 0 : THREE.MathUtils.clamp(travelTime, 0, 8);
+  const maxSteps = 8 * 60;
+  for (let elapsed = 0, steps = 0; elapsed < horizon && steps < maxSteps; elapsed += 1 / 60, steps++) {
+    const dt = Math.min(1 / 60, horizon - elapsed);
     const to = destination.clone().sub(point).setY(0);
     const distance = to.length();
     const desiredSpeed = Math.min(maxSpeed, Math.sqrt(Math.max(0, 2 * CONFIG.player.decel * distance)), distance * 2.2);

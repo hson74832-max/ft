@@ -10,7 +10,10 @@
 //     struck with the right foot,
 //  8. keepers who did not use their hands on a grounded ball at a dribbler's feet,
 //  9. intelligence and mentality attributes that changed no decision, position or
-//     effort.
+//     effort,
+// 10. prediction maths that could hang (an unbounded receiver-run loop, a dragless
+//     arrival estimate that made a lofted pass look quicker than it is),
+// 11. a gamepad that disconnects mid-frame taking the whole control step with it.
 // Runs the REAL engine headless plus direct AI decisions, like tactics-test.
 import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import * as THREE from "three";
@@ -581,6 +584,79 @@ async function main() {
     check("a kick is struck with the foot on the target's side of the body",
       toLeft.strike === "L" && toRight.strike === "R" && toLeft.started && toRight.started,
       `target left → ${toLeft.strike}, target right → ${toRight.strike}`);
+  }
+
+  // ================= 7b. A pad that disconnects mid-frame must not crash control ====
+  {
+    mute();
+    const engine = makeEngine(127);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(-18, 0, (p.idx - 6) * 0.5); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); }
+    const human = engine.players[4];
+    human.pos.set(0, 0, 0); human.moveTarget.copy(human.pos); human.vel.set(0, 0, 0);
+    engine.humanIdx = human.idx; engine.humanTeam = 0; engine.spectator = false;
+    engine.ball.possess(human.idx, 0);
+    // A pad that reports itself with no axes array (disconnect mid-frame).
+    const globals = globalThis as { navigator?: unknown };
+    const previous = Object.getOwnPropertyDescriptor(globals, "navigator");
+    Object.defineProperty(globals, "navigator", {
+      configurable: true, writable: true,
+      value: { getGamepads: () => [{ index: 0, connected: false, axes: undefined, buttons: undefined }] },
+    });
+    let crashed = false;
+    engine.keys.add("d");
+    try {
+      for (let f = 0; f < 20; f++) engine.step(1 / 60);
+    } catch { crashed = true; }
+    if (previous) Object.defineProperty(globals, "navigator", previous);
+    else delete globals.navigator;
+    unmute();
+    check("a gamepad without an axes array cannot crash the control step",
+      !crashed && engine.ball.possessedBy === human.idx,
+      crashed ? "the frame threw" : "20 frames stepped");
+    engine.dispose();
+  }
+
+  // ================= 8. Prediction maths: bounded loops, honest arrival time ========
+  {
+    const { predictReceiverRun } = await import("../src/game/passing");
+    const { estimateKickTravelTime, stepBallPhysics, kickBall } = await import("../src/game/ball");
+    const { passProfile } = await import("../src/game/match/passPlanning");
+    const start = new THREE.Vector3(0, 0, 0);
+    const destination = new THREE.Vector3(12, 0, 5);
+    const velocity = new THREE.Vector3(1, 0, 0);
+    const sane = predictReceiverRun(start, velocity.clone(), destination, 2, 8);
+    const nan = predictReceiverRun(start, velocity.clone(), destination, NaN, 8);
+    const infinite = predictReceiverRun(start, velocity.clone(), destination, Infinity, 8);
+    check("a non-finite travel time cannot spin the receiver predictor forever",
+      Number.isFinite(sane.x) && Number.isFinite(nan.x) && Number.isFinite(infinite.x)
+      && nan.distanceTo(start) < 0.001 && infinite.distanceTo(destination) < 3,
+      `sane ${sane.x.toFixed(1)}, NaN → ${nan.x.toFixed(2)}, Infinity → ${infinite.x.toFixed(1)}`);
+
+    // The arrival estimate has to match the ball the game actually plays.
+    const measured = (distance: number, power: number, loft: number) => {
+      const state = { pos: new THREE.Vector3(0, CONFIG.ball.radius, 0), vel: new THREE.Vector3(), spin: new THREE.Vector3() };
+      kickBall(state, new THREE.Vector3(1, 0, 0), power, loft);
+      const dt = 1 / 120;
+      for (let i = 1; i <= 120 * 12; i++) {
+        stepBallPhysics(state, dt);
+        if (state.pos.x >= distance) return i * dt;
+        if (state.vel.length() < 0.15) break;
+      }
+      return Infinity;
+    };
+    const short = passProfile("pass_short")!;
+    const lofted = passProfile("pass_long")!;
+    const reachableEstimate = estimateKickTravelTime(18, 9, short.loft);
+    const reachableReal = measured(18, 9, short.loft);
+    const unreachableEstimate = estimateKickTravelTime(26, 12, lofted.loft);
+    const unreachableReal = measured(26, 12, lofted.loft);
+    check("a short pass is estimated to arrive when it really arrives",
+      Math.abs(reachableEstimate - reachableReal) < 1 / 60 + 1e-6,
+      `estimate ${reachableEstimate.toFixed(2)}s vs measured ${reachableReal.toFixed(2)}s`);
+    check("a slow lofted pass that cannot reach is not reported as arriving early",
+      !Number.isFinite(unreachableReal) && unreachableEstimate >= 7.9,
+      `ball never arrives, estimate ${unreachableEstimate.toFixed(2)}s (a dragless guess said ${(26 / (12 * 0.55)).toFixed(2)}s)`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)` : "\nALL PASS");

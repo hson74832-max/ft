@@ -11,7 +11,12 @@
 //   * the side a free kick is awarded against drops into a block instead of
 //     staying in its attacking shape,
 //   * intelligence drives decisions and positioning while mentality drives effort
-//     and consistency, without either group leaking into the other.
+//     and consistency, without either group leaking into the other,
+//   * the offside line and the defensive line agree when a defender is missing,
+//   * a keeper stops chasing a delivery that has died,
+//   * a kickoff re-stage clears the pre-goal possession state,
+//   * a throw-in is placed where the ball actually crossed the touchline,
+//   * a released restart never puts the ball out of play.
 import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import assert from "node:assert/strict";
 import * as THREE from "three";
@@ -20,6 +25,9 @@ import { CONFIG } from "../src/game/config";
 import { SeededRandom } from "../src/game/random";
 import { MatchEngine } from "../src/game/engine";
 import { yawDelta, yawOfVector } from "../src/game/angles";
+import { onsideLimit } from "../src/game/tactics";
+import { outGoalCheck } from "../src/game/match/possession";
+import { releaseRestartToTaker } from "../src/game/match/restarts";
 import {
   believedPos, createPerception, halfAngleAt, inSight, remembered, scanHeadYaw, seesNow,
 } from "../src/game/match/perception";
@@ -445,6 +453,142 @@ test("the ball never leaves in a direction the body is not facing", () => {
     assert(behindTheBack === 0,
       `seed ${seed}: ${behindTheBack}/${errors.length} kicks left more than 80° away from the body (worst ${worst.toFixed(0)}°)`);
   }
+});
+
+// ------------------------------------------------ bookkeeping / spatial edges
+
+test("the offside line uses the same missing-defender fallback as the line itself", () => {
+  const seed = 91;
+  const ai = new AIController(new SeededRandom(seed), seed);
+  const roles = ["GK", "DEF", "MID", "MID", "FWD"];
+  // Only a keeper is left in the opposition: no second-last defender exists.
+  const players: WorldPlayer[] = [];
+  const own: [number, number][] = [[-19, 0], [-8, 0], [0, -4], [2, 4], [4, 0]];
+  const opp: [number, number][] = [[19, 0], [19, 6], [19, -6], [19, 9], [19, -9]];
+  for (let local = 0; local < 10; local++) {
+    const roleIdx = local % 5, team = local < 5 ? 0 : 1, idx = team * 5 + roleIdx;
+    const spot = team === 0 ? own[roleIdx] : opp[roleIdx];
+    if (team === 1 && roleIdx !== 0) continue;               // everyone but the keeper is gone
+    players.push({
+      idx, team, role: roles[roleIdx], roleIdx,
+      pos: new THREE.Vector3(spot[0], 0, spot[1]), vel: new THREE.Vector3(),
+      facing: 0, speed: 0, busy: false, uninterruptible: false, cooldowns: new Map(),
+      stamina: 1, hasBall: team === 0 && roleIdx === 0, callForBall: false, isHuman: false, runSerial: 0,
+      style: ai.sampleStyle(roles[roleIdx], idx), attributes: ai.sampleAttributes(roles[roleIdx], idx),
+      perception: createPerception(seed, idx),
+    });
+  }
+  const snap: WorldSnap = {
+    ballPos: new THREE.Vector3(-19, CONFIG.ball.radius, 0), ballVel: new THREE.Vector3(),
+    ballOwner: 0, ballOwnerTeam: 0, players, time: 10, half: 1, matchSeed: seed, ballKickAge: 1,
+  };
+  // Down to ten men there is no offside line: an attacker may run freely, not be
+  // clamped to the halfway line.
+  const limit = onsideLimit(snap, 0);
+  assert(limit >= CONFIG.pitch.length / 2 - 0.001,
+    `with only a keeper defending, the offside limit fell back to ${limit.toFixed(1)}m`);
+});
+
+test("a keeper stops chasing a delivery that has already died", () => {
+  const { ai, snap, keeper } = visionFixture(7, 0, null);
+  snap.ballOwner = null; snap.ballOwnerTeam = null;
+  keeper.hasBall = false;
+  snap.passFlight = {
+    team: keeper.team, passer: 3, receiver: keeper.idx, launchedAt: 9,
+    arrivesAt: 10, expiresAt: 11.2, target: new THREE.Vector3(-16, 0, 3),
+  };
+  const live = ai.think(keeper, 0, snap, 10.1);
+  assert(/GK RECEIVE/.test(live.reason), `a live delivery to the keeper must be attacked, got "${live.reason}"`);
+  ai.resetDecisions();
+  const expired = ai.think(keeper, 0, snap, 11.6);
+  assert(!/GK RECEIVE/.test(expired.reason),
+    `an expired delivery still had the keeper running at it: "${expired.reason}"`);
+  assert(Math.abs(expired.moveTarget.x + 16) > 1 || Math.abs(expired.moveTarget.z - 3) > 1,
+    "the expired delivery's landing spot must not still be his target");
+});
+
+test("a kickoff re-stage clears the pre-goal possession state", () => {
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 4242, headless: true, spectator: true });
+  engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+  // BLUE had the ball and RED has just won it: a transition window is open.
+  engine.ball.possess(9, 1);
+  engine.seenOwner = 9; engine.seenOwnerTeam = 1;
+  engine.transitionTeam = 1; engine.transitionUntil = engine.clock + 4;
+  engine.lastKnownOwnerTeam = 1;
+  engine.rules.startSetup("kickoff", [0, 0], 0);
+  engine.step(1 / 60);
+  assert.equal(engine.transitionTeam, null, "a phantom transition window survived the kickoff staging");
+  assert.equal(engine.seenOwnerTeam, engine.ball.ownerTeam,
+    `possession still points at the pre-kickoff team (${engine.seenOwnerTeam} vs ${engine.ball.ownerTeam})`);
+  assert.equal(engine.lastKnownOwnerTeam, engine.ball.ownerTeam, "the last-known owner team is stale");
+  engine.dispose();
+});
+
+test("re-entering the kickoff clears the restart warning latch", () => {
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 4243, headless: true, spectator: true });
+  engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+  engine.rules.startSetup("throw_in", [6, 12.4], 0);
+  engine.step(1 / 60);
+  // Pretend the throw-in had already logged its "restart delayed" notice.
+  engine.warnedRestartId = engine.rules.pendingRestart?.id ?? -1;
+  const staleId = engine.warnedRestartId;
+  assert(staleId > 0, "the fixture needs a live restart id");
+  engine.rules.score[0] = 1;
+  engine.rules.startSetup("kickoff", [0, 0], 1);
+  engine.step(1 / 60);
+  assert.equal(engine.warnedRestartId, -1,
+    `the kickoff re-stage kept the old warning latch (id ${engine.warnedRestartId} of restart ${staleId})`);
+  engine.dispose();
+});
+
+test("a throw-in is placed where the ball crossed the touchline", () => {
+  const L = CONFIG.pitch.length / 2, Wd = CONFIG.pitch.width / 2, R = CONFIG.ball.radius;
+  const stage = (prevX: number, prevZ: number, x: number, z: number) => {
+    const engine = new MatchEngine(headlessEngineCanvas(), { seed: 5150, headless: true, spectator: true });
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    engine.ball.release();
+    engine.ball.prevPos.set(prevX, R, prevZ);
+    engine.ball.pos.set(x, R, z);
+    engine.ball.vel.set(x - prevX, 0, z - prevZ);
+    engine.ball.lastTouch = 3; engine.ball.lastTouchTeam = 0;
+    outGoalCheck(engine);
+    const restart = engine.rules.pendingRestart;
+    engine.dispose();
+    return restart;
+  };
+  // A diagonal exit: the crossing point is interpolated on the Z travel, not taken
+  // from where the frame ended (which is metres further down the touchline).
+  const prevX = 2, prevZ = Wd - 0.1, exitX = 6, exitZ = Wd + R + 0.2;
+  const touchPlane = Wd + R;
+  const expectedCrossX = prevX + (exitX - prevX) * ((touchPlane - prevZ) / (exitZ - prevZ));
+  const diagonal = stage(prevX, prevZ, exitX, exitZ);
+  assert(diagonal?.kind === "throw_in", `expected a throw-in, got ${diagonal?.kind}`);
+  assert(Math.abs(diagonal.pos[0] - expectedCrossX) < 0.05,
+    `diagonal exit placed the throw-in at x ${diagonal.pos[0].toFixed(2)} (crossing is ${expectedCrossX.toFixed(2)})`);
+  assert(Math.abs(diagonal.pos[0] - exitX) > 1,
+    "the throw-in must not be taken from where the frame ended");
+  // A ball already outside the line moving purely along X has no crossing this
+  // frame; the last in-field X is the only honest answer, never the exit X.
+  const alongX = stage(2, Wd + R + 0.05, 6, Wd + R + 0.05);
+  assert(alongX?.kind === "throw_in", `expected a throw-in, got ${alongX?.kind}`);
+  assert(alongX.pos[0] < L, "the throw-in must be on the pitch");
+  assert(Math.abs(alongX.pos[0] - 2) < 0.35,
+    `a ball moving along X put the throw-in at x ${alongX.pos[0].toFixed(2)} (last in-field x is 2)`);
+});
+
+test("a released restart never leaves the ball outside the pitch", () => {
+  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 606, headless: true, spectator: true });
+  engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+  const taker = engine.players[3];
+  // A throw-in taker standing legally outside the touchline.
+  taker.pos.set(4, 0, CONFIG.pitch.width / 2 + 1.4);
+  taker.restartTaker = true;
+  releaseRestartToTaker(engine, taker);
+  const halfW = CONFIG.pitch.width / 2, halfL = CONFIG.pitch.length / 2;
+  assert(Math.abs(engine.ball.pos.z) < halfW && Math.abs(engine.ball.pos.x) < halfL,
+    `the released ball sits outside the pitch at (${engine.ball.pos.x.toFixed(2)}, ${engine.ball.pos.z.toFixed(2)})`);
+  assert.equal(engine.ball.possessedBy, taker.idx, "the released restart must belong to its taker");
+  engine.dispose();
 });
 
 console.log(`\n${count} PERCEPTION / RESTART REGRESSIONS PASSED`);
