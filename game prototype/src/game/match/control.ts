@@ -194,12 +194,15 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
       if (tr) tr.startActionResult = "skipped:cached-decision";
     } else if (p.anim.busy && p.anim.uninterruptible) {
       if (tr) tr.startActionResult = `skipped:locked(${p.anim.actionId})`;
-      e.ai.nextThink.set(p.idx, 0); // re-decide as soon as the lock clears
+      e.ai.nextThink.set(p.idx, e.clock + 0.1); // re-decide shortly; avoids RNG thrash every frame
     } else {
       const actionTarget = dec.action === "dribble_touch" ? undefined : (dec.actionTarget ?? dec.moveTarget).clone();
       const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, dec.actionSeed, powerForAction(p, dec.action));
       if (ok) { p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec); }
-      else e.ai.nextThink.set(p.idx, 0); // rejected (cooldown/priority): re-decide next frame
+      else {
+        const cooldownRemaining = p.anim.cooldowns.get(dec.action) ?? 0;
+        e.ai.nextThink.set(p.idx, e.clock + Math.max(0.05, cooldownRemaining)); // retry after cooldown decays
+      }
       if (tr) tr.startActionResult = ok ? `ok:${dec.action}` : `rejected:${dec.action}(cooldown ${(p.anim.cooldowns.get(dec.action) ?? 0).toFixed(2)}s)`;
     }
   } else {

@@ -107,10 +107,10 @@ export function outGoalCheck(e: MatchHost) {
   // The whole ball must cross the line, stay inside the net volume, fit between posts and under the bar.
   if (Math.abs(b.z) + R < GW && b.y + R < GH) {
     if (b.x > L + R && b.x < L + CONFIG.pitch.goalDepth + 0.4) {
-      e.rules.goal(e.ai.attackSign(0, e.rules.half) > 0 ? 0 : 1); onGoalReset(e, ); return;
+      e.rules.goal(e.ai.attackSign(0, e.rules.half) > 0 ? 0 : 1); onGoalReset(e); return;
     }
     if (b.x < -L - R && b.x > -L - CONFIG.pitch.goalDepth - 0.4) {
-      e.rules.goal(e.ai.attackSign(0, e.rules.half) < 0 ? 0 : 1); onGoalReset(e, ); return;
+      e.rules.goal(e.ai.attackSign(0, e.rules.half) < 0 ? 0 : 1); onGoalReset(e); return;
     }
   }
   if (b.x > L + R || b.x < -L - R) {
