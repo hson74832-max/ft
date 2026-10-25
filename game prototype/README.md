@@ -143,6 +143,7 @@ src/game/
     offside.ts      offside capture, flagging, the at-kick check
     restarts.ts     restart staging, taker selection, delivery sampling, watchdog
     contacts.ts     the contact frame: what the ball does when an action lands
+    tackles.ts      deterministic challenge quality, recovery and possession protection
     possession.ts   possession clock, reception triggers, out-of-play detection
     collisions.ts   player/ball body collisions
     snapshot.ts     HUD DTO (`Snapshot`)
@@ -157,6 +158,7 @@ scripts/kickoff-regression.ts  headless kickoff legality checks
 scripts/support-regression.ts mirrored reset/width/run/shooting and keeper-foot scenarios
 scripts/support-match.ts      complete seeded matches and exact trajectory replay checks
 scripts/attacking-runs.ts     regression suite for off-ball runs, progressive intent, transition
+scripts/duel-regression.ts    tackle quality/recovery, keeper angles, deterministic replay, HUD robustness
 scripts/motion-pipeline.ts    generator → pack → slot bindings → controller → live match checks
 ```
 
@@ -164,7 +166,7 @@ scripts/motion-pipeline.ts    generator → pack → slot bindings → controlle
 
 **In the browser:** append `?debug=ai` to the URL. Each frame, before the player loop, every player gets a trace row. Once per second the console prints a table with `idx, team, role, hasBall, branch, thinkCalled, thinkFresh, decisionReason, actionReturned, startActionResult, animBusy, animUninterruptible, animActionId, moveTarget, desiredSpeed, speed, overwrittenBy`, plus explicit warnings such as `CARRIER STALL` or `move target overwritten by restartHold`. Discrete events (possession granted, kick released or cancelled, tackle/intercept won or missed, keeper catch/parry/miss with distances) are logged as they happen.
 
-`branch` names who controlled the player that frame: `ai`, `human`, `restartHold`, `frozen`, `gkHold`. `startActionResult` is `ok:<clip>`, `rejected:<clip>(cooldown…)`, `skipped:locked(<clip>)` or `skipped:cached-decision`.
+`branch` names who controlled the player that frame: `ai`, `human`, `restartHold`, `frozen`, `gkHold`. `startActionResult` is `ok:<clip>`, `skipped:recovery(...)`, `skipped:locked(<clip>)` or `skipped:cached-decision`.
 
 **Headless (Node), same engine, fixed seed:**
 
@@ -177,7 +179,9 @@ node /tmp/ai-repro.cjs --gk               # controlled keeper grid: distance × 
 GKCASE="20,1.3,25,0.06" node /tmp/ai-repro.cjs --gk   # trace one grid case
 ```
 
-With the same seed, inputs and fixed 1/60 s steps, the headless runs reproduce the same output. `new MatchEngine(canvas, { seed, headless: true })` runs the real simulation without a GPU. A seed alone does not fix variable browser frame timing or human input timing.
+With the same seed, inputs, motion-pack content and fixed 1/60 s steps, the headless runs reproduce the same output. `new MatchEngine(canvas, { seed, headless: true })` runs the real simulation without a GPU. A seed alone does not fix variable browser frame timing or human input timing.
+
+The match, coin-toss, AI, per-player AI decision, restart-attempt and action-id streams are derived independently from the match seed. Debug traces, camera mode, HUD snapshots, animation phases, cancelled passes, human/spectator think skips and restart retries do not advance other domains' PRNG streams. `snapshot()` reports the motion-registry revision captured at kickoff and flags a mid-match Motion Lab import: importing a clip changes gameplay content (duration/contact frames), so a replay must start with the same pack. In-flight actions freeze their metadata and sampled clip at request time.
 
 ## Self-test
 
@@ -192,11 +196,21 @@ npx esbuild scripts/support-regression.ts --bundle --platform=node --format=cjs 
 node /tmp/support.cjs
 npx esbuild scripts/support-match.ts --bundle --platform=node --format=cjs --outfile=/tmp/support-match.cjs
 node /tmp/support-match.cjs
+npm run verify:duels
 ```
+
+`npm run verify:duels` bundles and runs `scripts/duel-regression.ts`: clean/blindside tackle outcomes, recovery and possession protection, keeper angle geometry, action-seed/RNG isolation, debug/camera/snapshot replay equivalence, `footWorld` fallback, empty/invalid snapshots, resizable AI debug lines and roster-independent kickoff staging.
 
 Covers kickoff/half-time/full-time flow, cross-seed determinism, FieldMotion parsing/sampling, real-measurement physics (free-fall drop time, speed-dependent aero drag, Magnus curve, rolling stop, shot height, speed cap), centre-back lane closure, offside detection and support spacing.
 
 **Tactics regression (`scripts/tactics-test.ts`, real engine headless):** clear close-range shooting, reachable channels, central cover plus width, defensive compaction, lofted corners, and short/long keeper options. The old assertion forcing the forward to the opposite touchline was replaced: that behavior caused the isolation regression.
+
+## Duels and goalkeeper positioning
+
+- **Tackles are deterministic duels, not binary possession swaps.** `match/tackles.ts` computes a bounded quality score from facing angle, approach side, ball/body distance, wind-up timing, carrier movement, stamina and pressing style. It never calls `Math.random()` or the match PRNG; the same state produces the same outcome.
+- A high-quality, ball-first challenge can win possession. A marginal challenge spills the ball into neutral space. A bad-angle, blind-side, protected-carrier or late challenge is a miss/foul and never grants free possession. Severe contact is recorded as a foul; enabling **Fouls → free kick / penalty** turns it into a restart. Fouls are off by default to keep the four-minute prototype flowing.
+- Recovery starts when the challenge starts, not at the contact frame. Standing and sliding challenges have separate reach, recovery and cooldown values in `CONFIG.tackle`; a slide has more reach but a narrower clean window and a longer `get_up` recovery. The winner receives `possessionProtection` seconds of shielding, which breaks immediate A-wins/B-wins/A-wins ping-pong.
+- **Keeper positioning uses an angle arc.** `keeperPositionTarget()` places the goalkeeper on the ball-to-goal-centre ray, with a range-dependent advance, a close-threat rush bonus and near-post bias. The old world-space clamp `clamp(x, -19.4, 19.4)` accidentally restricted both keepers to 0.6 m off the goal line. With the controlled `ai-repro --gk` grid starting the keeper at its live position, saves rise from **29/75 (39%)** on the old 0.6 m placement to **37/75 (49%)**, and goals fall from **15 to 11**.
 
 ## Coordinated possession
 

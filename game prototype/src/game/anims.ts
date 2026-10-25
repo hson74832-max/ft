@@ -149,12 +149,12 @@ export function locomotionPose(p: LocoParams): Pose {
 // ---- one-shot action poses (windup -> contact -> recover) ----
 function phase01(t: number, d: number) { return THREE.MathUtils.clamp(t / d, 0, 1); }
 
-export function actionPose(id: string, t: number, dur: number): Pose {
+export function actionPose(id: string, t: number, dur: number, motion?: FieldMotionClip): Pose {
   // A produced clip bound to this slot replaces the procedural action entirely.
-  const bound = getBoundFieldMotionClip(id);
+  // Passing the clip captured at request time freezes an in-flight action even
+  // if Motion Lab imports another clip while the match is running.
+  const bound = motion ?? getBoundFieldMotionClip(id) ?? (ANIMATION_CATALOGUE.some((c) => c.id === id) ? undefined : getFieldMotionClip(id));
   if (bound) return sampleFieldMotion(bound, t).pose;
-  const motion = getFieldMotionClip(id);
-  if (motion) return sampleFieldMotion(motion, t).pose;
   const k = phase01(t, dur);
   const pose = emptyPose();
   const wind = (a: number, b: number) => THREE.MathUtils.smoothstep(k, a, b);
@@ -385,6 +385,9 @@ export class AnimationController {
   actionId: string | null = null;
   actionT = 0;
   actionDur = 0;
+  /** Metadata/clip frozen when the action starts; imports cannot retime an active action. */
+  actionMeta: ClipMeta | null = null;
+  actionMotion: FieldMotionClip | undefined = undefined;
   contactFired = false;
   prevPose: Pose | null = null;
   blend = 1;
@@ -402,31 +405,39 @@ export class AnimationController {
   state = "locomotion";
   lastContactEvent: string | null = null;
 
-  requestAction(id: string): boolean {
+  requestAction(id: string, force = false): boolean {
     // Refuse unknown clips instead of throwing: this runs inside the frame
     // loop, where an uncaught `clip not found` would freeze the whole match.
     if (!clipExists(id)) return false;
     const meta = getClip(id);
     if ((this.cooldowns.get(id) ?? 0) > 0) return false;
     if (this.actionId) {
-      const cur = getClip(this.actionId);
-      const nt = this.actionT / this.actionDur;
+      const cur = this.actionMeta ?? getClip(this.actionId);
+      const nt = this.actionT / Math.max(0.0001, this.actionDur);
       const inWindow = nt >= cur.interruptible[0] && nt <= cur.interruptible[1];
-      if (!inWindow && meta.priority <= cur.priority) return false;
+      // `force` is only for engine-owned recovery clips (e.g. get_up after a
+      // failed slide); normal gameplay requests still obey the priority gate.
+      if (!force && !inWindow && meta.priority <= cur.priority) return false;
       // snapshot crossfade
       this.prevPose = this.currentPoseSnapshot();
     }
     this.actionId = id;
     this.actionT = 0;
     this.actionDur = meta.duration;
+    this.actionMeta = meta;
+    this.actionMotion = getBoundFieldMotionClip(id)
+      ?? (ANIMATION_CATALOGUE.some((c) => c.id === id) ? undefined : getFieldMotionClip(id));
     this.contactFired = false;
     this.blend = 0;
     this.state = meta.category;
     return true;
   }
 
+  /** Root motion of the frozen action metadata; safe without a registry lookup. */
+  get actionRootMotion(): boolean { return !!this.actionMeta?.rootMotion; }
+
   currentPoseSnapshot(): Pose {
-    if (this.actionId) return actionPose(this.actionId, this.actionT, this.actionDur);
+    if (this.actionId) return actionPose(this.actionId, this.actionT, this.actionDur, this.actionMotion);
     return locomotionPose({ speed: this.locoSpeed, dirAngle: this.dirAngle, phase: this.locoPhase, fatigue: this.fatigue, jockey: this.jockey });
   }
 
@@ -466,14 +477,16 @@ export class AnimationController {
     let rootDelta = { dx: 0, dz: 0, dYaw: 0 };
 
     if (this.actionId) {
-      const meta = getClip(this.actionId);
+      // Use the metadata captured at request time. A Motion Lab import must not
+      // change the duration, contact frame or pose of an action already running.
+      const meta = this.actionMeta ?? getClip(this.actionId);
       this.actionT += dt;
       nt = meta.loop ? (this.actionT % this.actionDur) / this.actionDur : THREE.MathUtils.clamp(this.actionT / this.actionDur, 0, 1);
       clip = this.actionId;
-      pose = actionPose(this.actionId, this.actionT, this.actionDur);
+      pose = actionPose(this.actionId, this.actionT, this.actionDur, this.actionMotion);
       // root motion
       if (meta.rootMotion) {
-        const motion = getBoundFieldMotionClip(this.actionId) ?? getFieldMotionClip(this.actionId);
+        const motion = this.actionMotion;
         if (motion) {
           const current = sampleFieldMotion(motion, this.actionT).root;
           const previous = sampleFieldMotion(motion, Math.max(0, this.actionT - dt)).root;
@@ -489,10 +502,14 @@ export class AnimationController {
         this.contactFired = true;
         contact = this.actionId;
         this.lastContactEvent = this.actionId;
-        this.cooldowns.set(this.actionId, meta.category === "tackle" ? 1.4 : meta.category === "shoot" ? 0.8 : 0.5);
+        this.cooldowns.set(this.actionId, meta.category === "tackle"
+          ? (this.actionId === "tackle_slide" ? CONFIG.tackle.slideCooldown : CONFIG.tackle.standCooldown)
+          : meta.category === "shoot" ? 0.8 : 0.5);
       }
       if (!meta.loop && this.actionT >= this.actionDur) {
         this.actionId = null;
+        this.actionMeta = null;
+        this.actionMotion = undefined;
         this.state = "locomotion";
         this.blend = 0;
         this.prevPose = pose;
@@ -534,8 +551,8 @@ export class AnimationController {
   get busy(): boolean { return this.actionId !== null; }
   get uninterruptible(): boolean {
     if (!this.actionId) return false;
-    const cur = getClip(this.actionId);
-    const nt = this.actionT / this.actionDur;
+    const cur = this.actionMeta ?? getClip(this.actionId);
+    const nt = this.actionT / Math.max(0.0001, this.actionDur);
     return !(nt >= cur.interruptible[0] && nt <= cur.interruptible[1]);
   }
 

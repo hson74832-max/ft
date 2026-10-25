@@ -142,6 +142,7 @@ function Settings({ engine }: { engine: () => MatchEngine | null }) {
         <ToggleRow label="Fouls → free kick / penalty" value={!!e?.foulsOn} disabled={!e} onChange={() => { if (e) { e.foulsOn = !e.foulsOn; tick((x) => x + 1); } }} />
         <ToggleRow label="Raw aim (no pass assist)" value={!!e?.aimRaw} disabled={!e} onChange={() => { if (e) { e.aimRaw = !e.aimRaw; tick((x) => x + 1); } }} />
         <ToggleRow label="AI target-line overlay" value={!!e?.showAIDebug} disabled={!e} onChange={() => { if (e) { e.showAIDebug = !e.showAIDebug; tick((x) => x + 1); } }} />
+        <ToggleRow label="Animation overlay (H)" value={!!e?.showAnimOverlay} disabled={!e} onChange={() => { if (e) { e.showAnimOverlay = !e.showAnimOverlay; tick((x) => x + 1); } }} />
         <ToggleRow label="Camera: broadcast" value={(e?.cameraMode ?? "broadcast") === "broadcast"} disabled={!e} onChange={() => { if (e) { e.cameraMode = e.cameraMode === "broadcast" ? "follow" : "broadcast"; tick((x) => x + 1); } }} />
       </div>
       <div>

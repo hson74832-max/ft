@@ -38,6 +38,15 @@ export function createMatchSeed(): number {
   return words[0] >>> 0;
 }
 
+/**
+ * Derive an independent PRNG stream from the match seed and a stable domain key.
+ * This keeps AI decisions, restart retries, animation cosmetics and replay-id
+ * generation from shifting each other's random draws.
+ */
+export function streamSeed(seed: number, key: string): number {
+  return Math.floor(tieBreakHash(seed, 0, 0, `stream:${key}`) * 0x100000000) >>> 0;
+}
+
 // Stable per-player/per-run hash used only to break utility ties.
 export function tieBreakHash(seed: number, playerId: number, runSerial: number, key: string): number {
   let h = (seed ^ Math.imul(playerId + 1, 0x9e3779b1) ^ Math.imul(runSerial + 1, 0x85ebca6b)) >>> 0;

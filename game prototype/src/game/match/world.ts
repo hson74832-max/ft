@@ -3,13 +3,29 @@ import * as THREE from "three";
 import { CONFIG } from "../config";
 import type { MatchHost } from "./host";
 
-/** Renderer + shadow configuration; a no-op stub in headless reproduction runs. */
-export function createRenderer(canvas: HTMLCanvasElement, headless: boolean): THREE.WebGLRenderer {
-  const renderer = headless
-    // Headless reproduction harness: identical simulation, no GPU.
-    ? ({ render() {}, setSize() {}, setPixelRatio() {}, dispose() {}, shadowMap: { enabled: false, type: 0 } } as unknown as THREE.WebGLRenderer)
+/**
+ * Only the renderer methods the engine actually calls. A real WebGLRenderer
+ * satisfies this structurally; headless runs use a complete no-op implementation
+ * instead of lying about being a WebGLRenderer with most methods missing.
+ */
+export interface MatchRenderer {
+  render(scene: THREE.Scene, camera: THREE.Camera): void;
+  setSize(width: number, height: number, updateStyle?: boolean): void;
+  setPixelRatio(value: number): void;
+  dispose(): void;
+  shadowMap: { enabled: boolean; type: number };
+}
+
+/** Renderer + shadow configuration; a complete no-op in headless reproduction runs. */
+export function createRenderer(canvas: HTMLCanvasElement, headless: boolean): MatchRenderer {
+  const renderer: MatchRenderer = headless
+    ? {
+      domElement: canvas,
+      render() {}, setSize() {}, setPixelRatio() {}, dispose() {}, clear() {},
+      shadowMap: { enabled: false, type: 0 },
+    } as MatchRenderer
     : new THREE.WebGLRenderer({ canvas, antialias: true });
-  if (!headless) renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  if (!headless) renderer.setPixelRatio(Math.min(typeof devicePixelRatio === "number" ? devicePixelRatio : 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   return renderer;
@@ -27,16 +43,7 @@ export function createMatchCamera(camPos: THREE.Vector3): THREE.PerspectiveCamer
   return camera;
 }
 
-/** Placeholder group for a future crowd system; intentionally disabled. */
-export function addCrowdStub(scene: THREE.Scene): THREE.Group {
-  const crowdStub = new THREE.Group();
-  crowdStub.name = "CrowdSystem (disabled stub — add fans here later)";
-  crowdStub.visible = false;
-  scene.add(crowdStub);
-  return crowdStub;
-}
-
-  export function buildPitchTexture(): THREE.CanvasTexture {
+export function buildPitchTexture(): THREE.CanvasTexture {
     const W = 1024, H = 640;
     const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
     const g = cv.getContext("2d")!;
@@ -138,18 +145,26 @@ export function buildWorld(e: MatchHost) {
 /** Line overlay that visualises AI move targets. */
 export function buildAIDebug(e: MatchHost) {
   const geo = new THREE.BufferGeometry();
-  e.aiLinePos = new THREE.Float32BufferAttribute(new Float32Array(10 * 2 * 3), 3);
+  // Size from the actual roster; a fixed ten-player buffer leaves stale lines
+  // for smaller squads and silently drops lines for larger ones.
+  const count = Math.max(1, e.players.length);
+  e.aiLinePos = new THREE.Float32BufferAttribute(new Float32Array(count * 2 * 3), 3);
   geo.setAttribute("position", e.aiLinePos);
+  geo.setDrawRange(0, count * 2);
   e.aiLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.7 }));
   e.aiLines.frustumCulled = false;
   e.scene.add(e.aiLines);
 }
 
 export function resizeRenderer(e: MatchHost) {
-    const w = e.canvas.clientWidth || 800, h = e.canvas.clientHeight || 500;
-    e.renderer.setSize(w, h, false);
-    e.camera.aspect = w / h; e.camera.updateProjectionMatrix();
-  }
+  // A canvas hidden on the first layout pass reports 0 × 0. Use its backing
+  // size or a safe default, and never build a zero/NaN camera aspect.
+  const w = Math.max(1, e.canvas.clientWidth || e.canvas.width || 800);
+  const h = Math.max(1, e.canvas.clientHeight || e.canvas.height || 500);
+  e.renderer.setSize(w, h, false);
+  e.camera.aspect = w / h;
+  e.camera.updateProjectionMatrix();
+}
 
 /**
  * Release every GPU resource owned by the scene graph: geometries, materials,

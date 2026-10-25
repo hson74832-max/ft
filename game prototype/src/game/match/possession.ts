@@ -7,6 +7,8 @@ import { aiEvent } from "./debug";
 import { flagOffside } from "./offside";
 import { setHumanPlayer, switchToNearest } from "./roster";
 import { startAction } from "./actions";
+import { resetTackleState } from "./tackles";
+import { tieBreakHash } from "../random";
 import type { MatchHost } from "./host";
 
 /** Possession clock: carrier time on the ball, attacking-transition window. */
@@ -44,7 +46,11 @@ export function possessionCheck(e: MatchHost) {
     }
     e.lastKnownOwnerTeam = o.team;
     e.lastKnownOwnerIdx = o.idx;
-    if (o.speed > 5.5 && !o.anim.busy && e.rng.next() < 0.025 * o.style.carry) startAction(e, o, "dribble_touch");
+    // Frame-derived, not a shared PRNG draw: an extra dribble touch must not
+    // shift AI decision noise or restart sampling later in the match.
+    const frame = Math.round(e.clock * 60);
+    const dribbleRoll = tieBreakHash(e.matchSeed, o.idx, frame, `dribble:${frame}`);
+    if (o.speed > 5.5 && !o.anim.busy && dribbleRoll < 0.025 * o.style.carry) startAction(e, o, "dribble_touch");
     return;
   }
 
@@ -104,6 +110,12 @@ export function outGoalCheck(e: MatchHost) {
   const GW = CONFIG.pitch.goalWidth / 2, GH = CONFIG.pitch.goalHeight;
   const R = CONFIG.ball.radius;
   const b = e.ball.pos;
+  // Prefer the actual last touch, then the player's team, then the last known
+  // owner. Only an entirely untouched ball falls back to team 0 instead of
+  // silently awarding possession on an unknown touch.
+  const touchTeam = e.ball.lastTouchTeam
+    ?? (e.ball.lastTouch !== null ? e.players[e.ball.lastTouch]?.team : undefined)
+    ?? e.lastKnownOwnerTeam;
   // The whole ball must cross the line, stay inside the net volume, fit between posts and under the bar.
   if (Math.abs(b.z) + R < GW && b.y + R < GH) {
     if (b.x > L + R && b.x < L + CONFIG.pitch.goalDepth + 0.4) {
@@ -115,9 +127,9 @@ export function outGoalCheck(e: MatchHost) {
   }
   if (b.x > L + R || b.x < -L - R) {
     const side = b.x > 0 ? 1 : -1;
-    const lastT = e.ball.lastTouchTeam ?? 0;
     const attacker = e.ai.attackSign(0, e.rules.half) === side ? 0 : 1;
     const defender = 1 - attacker;
+    const lastT = touchTeam ?? attacker; // unknown goal-line touch: safest is a goal kick
     if (lastT === attacker) {
       const gx = side * (L - 2.0);
       e.outRestartCount++;
@@ -133,7 +145,7 @@ export function outGoalCheck(e: MatchHost) {
     return;
   }
   if (Math.abs(b.z) > Wd + R) {
-    const lastT = e.ball.lastTouchTeam ?? 0;
+    const lastT = touchTeam ?? 0;
     const team = 1 - lastT;
     const cx = THREE.MathUtils.clamp(b.x, -L + 0.25, L - 0.25);
     const cz = (b.z > 0 ? 1 : -1) * (Wd - 0.25);
@@ -147,6 +159,9 @@ export function outGoalCheck(e: MatchHost) {
 /** Clear pending intents and the offside snapshot when a goal goes in. */
 export function onGoalReset(e: MatchHost) {
   // ball stays in net during celebration; reset at kickoff setup (handled by rules GOAL→SETUP)
-  for (const p of e.players) p.pendingKick = null;
+  for (const p of e.players) {
+    p.pendingKick = null;
+    resetTackleState(p);
+  }
   e.offsideCandidates.clear(); e.offsideTeam = null;
 }

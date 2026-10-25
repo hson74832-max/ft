@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "verify:motion": "esbuild scripts/motion-pipeline.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/motion-pipeline.cjs && node .test-artifacts/motion-pipeline.cjs"
+    "verify:motion": "esbuild scripts/motion-pipeline.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/motion-pipeline.cjs && node .test-artifacts/motion-pipeline.cjs",
+    "verify:duels": "esbuild scripts/duel-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/duel-regression.cjs && node .test-artifacts/duel-regression.cjs"
   },
   "dependencies": {
     "@types/three": "^0.186.0",

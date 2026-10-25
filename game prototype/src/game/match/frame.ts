@@ -2,7 +2,6 @@
 // motion, animation, contact, rig transform) and goal-celebration staging.
 import * as THREE from "three";
 import { CONFIG } from "../config";
-import { getClip } from "../anims";
 import { applyPose } from "../skeleton";
 import { WorldSnap } from "../ai";
 import { turnTowards, yawDelta, yawOfVector } from "../angles";
@@ -13,6 +12,7 @@ import { onContact } from "./contacts";
 import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
 import { restartAuto } from "./restarts";
+import { decayTackleTimers } from "./tackles";
 import type { MatchHost } from "./host";
 
 /** The AI-facing view of the world, rebuilt once per frame. */
@@ -28,6 +28,7 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
       stamina: p.stamina, hasBall: e.ball.possessedBy === p.idx,
       callForBall: p.callForBall, isHuman: p.isHuman, runSerial: p.runSerial, style: p.style,
       moveTarget: p.moveTarget.clone(), desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
+      tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
     })),
     time: e.clock, half: e.rules.half, matchSeed: e.matchSeed,
     ballKickAge: e.ball.kickAge,
@@ -39,14 +40,22 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
   return snap;
 }
 
-/** Scorer's team celebrates while the goal is being replayed. */
+/** Scorer's team celebrates once per GOAL event while the goal is replayed. */
 export function celebrateGoal(e: MatchHost) {
   // The rules engine records who scored; inferring it from "the last event"
   // breaks the moment any other event (whistle, possession, …) lands after
-  // the goal during the celebration phase and the wrong team celebrates.
+  // the goal during the celebration phase. Find the actual GOAL event and
+  // latch its id so a short imported celebration clip cannot consume extra
+  // action seeds by restarting before the GOAL phase ends.
+  let goalId = -1;
+  for (let i = e.rules.events.length - 1; i >= 0; i--) {
+    if (e.rules.events[i].type === "GOAL") { goalId = e.rules.events[i].id; break; }
+  }
+  if (goalId < 0 || e.celebratedGoalEventId === goalId) return;
+  e.celebratedGoalEventId = goalId;
   for (const p of e.players) {
-    if (p.team === e.rules.lastScorer && p.role !== "GK") {
-      if (!p.anim.actionId) startAction(e, p, "celebrate");
+    if (p.team === e.rules.lastScorer && p.role !== "GK" && !p.anim.actionId) {
+      startAction(e, p, "celebrate");
     }
   }
 }
@@ -67,8 +76,11 @@ export function beginAITrace(e: MatchHost) {
 /** Control branch, motion integration, animation and rig transform for every player. */
 export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boolean, frozen: boolean) {
   for (const p of e.players) {
+    // Timers decay on every branch (human, AI, frozen and restart hold).
+    decayTackleTimers(p, dt);
     // Clear stale kick intents once the animation that owned them has finished.
     if (p.pendingKick && !p.anim.busy) p.pendingKick = null;
+    if (p.tackleChallenge && p.anim.actionId !== p.tackleChallenge.action) p.tackleChallenge = null;
     const restartHold = live && e.rules.pendingRestart !== null
       && e.restartLaunchedId !== e.rules.pendingRestart.id;
     const isHumanControlled = !e.spectator && p.idx === e.humanIdx && live && !restartHold;
@@ -103,7 +115,7 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       separation.add(away);
     }
     desired.add(separation);
-    const rootAction = p.anim.actionId ? getClip(p.anim.actionId).rootMotion : false;
+    const rootAction = p.anim.actionRootMotion;
     if (rootAction) p.vel.multiplyScalar(Math.max(0, 1 - dt * 12));
     else {
       const sp = Math.hypot(p.vel.x, p.vel.z);

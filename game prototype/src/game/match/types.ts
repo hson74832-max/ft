@@ -7,18 +7,34 @@ import type { PlayerRig } from "../playerMesh";
 import type { AIDecision, PlayerStyle } from "../ai";
 import type { RunType, SupportJob } from "../tactics";
 
+/** A tackle wind-up, frozen at action start so contact timing cannot be gamed. */
+export interface TackleChallenge {
+  action: "tackle_stand" | "tackle_slide";
+  startedAt: number;
+  targetIdx: number | null;
+  targetTeam: number | null;
+  idealContact: number;
+  startBallDist: number;
+  startCarrierDist: number;
+}
+
 /** A match participant: simulation state, animation controller and mesh rig. */
 export interface EnginePlayer {
   idx: number; team: number; role: string; roleIdx: number;
   pos: THREE.Vector3; vel: THREE.Vector3; facing: number;
   speed: number; rig: PlayerRig; anim: AnimationController;
   moveTarget: THREE.Vector3; desiredSpeed: number;
-  pendingKick: { action: string; target: THREE.Vector3; passTo?: number; actionSeed?: number; power?: number } | null;
-  holdT: number; stumbleT: number; celebrateT: number;
+  pendingKick: { action: string; target: THREE.Vector3; passTo?: number; power?: number } | null;
+  holdT: number; stumbleT: number;
+  /** Recovery after attempting a challenge; blocks another tackle even if the clip ends early. */
+  tackleRecoveryT: number;
+  /** Brief protection after winning a challenge; breaks immediate possession ping-pong. */
+  tackleProtectionT: number;
+  tackleChallenge: TackleChallenge | null;
   callForBall: boolean; isHuman: boolean; stamina: number;
   decisionReason: string; utilities: Record<string, number>;
   restartTaker: boolean;
-  runSerial: number; style: PlayerStyle; lastActionSeed: number | null;
+  runSerial: number; style: PlayerStyle;
   supportJob?: SupportJob;
   supportRun?: RunType;
   supportMode?: string;

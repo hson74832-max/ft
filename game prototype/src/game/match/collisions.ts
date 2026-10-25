@@ -1,7 +1,6 @@
 // Body collisions: player-vs-player separation and ball-vs-player deflection.
 import * as THREE from "three";
 import { CONFIG } from "../config";
-import { getClip } from "../anims";
 import { aiEvent } from "./debug";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
@@ -20,8 +19,8 @@ export function resolvePlayerCollisions(e: MatchHost) {
       const nz = distance > 1e-4 ? dz / distance : 0.0001;
       const overlap = minimum - distance;
       // Grounded positional resolution: neither player may occupy the other's cylinder.
-      const aPinned = a.anim.actionId !== null && getClip(a.anim.actionId).rootMotion;
-      const bPinned = b.anim.actionId !== null && getClip(b.anim.actionId).rootMotion;
+      const aPinned = a.anim.actionRootMotion;
+      const bPinned = b.anim.actionRootMotion;
       const aShare = aPinned && !bPinned ? 0 : bPinned && !aPinned ? 1 : aPinned && bPinned ? 0.5 : a.speed >= b.speed ? 0.42 : 0.58;
       a.pos.x -= nx * overlap * aShare; a.pos.z -= nz * overlap * aShare;
       b.pos.x += nx * overlap * (1 - aShare); b.pos.z += nz * overlap * (1 - aShare);

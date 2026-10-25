@@ -1,4 +1,5 @@
 // ?debug=ai instrumentation: event log and the per-frame decision trace table.
+import * as THREE from "three";
 import type { MatchHost } from "./host";
 
 /** ?debug=ai event (possession grant, kick release, cancellations). */
@@ -33,10 +34,20 @@ export function flushAITrace(e: MatchHost, realDt: number) {
 export function updateAIDebug(e: MatchHost) {
   e.aiLines.visible = e.showAIDebug;
   if (!e.showAIDebug) return;
-  const arr = e.aiLinePos.array as Float32Array;
+  const needed = e.players.length * 6;
+  let attr = e.aiLinePos;
+  if (attr.array.length !== needed) {
+    // Rosters can change in tests/custom matches; resize rather than writing
+    // past a fixed-size typed array or leaving old segments visible.
+    attr = new THREE.Float32BufferAttribute(new Float32Array(needed), 3);
+    e.aiLinePos = attr;
+    e.aiLines.geometry.setAttribute("position", attr);
+    e.aiLines.geometry.setDrawRange(0, e.players.length * 2);
+  }
+  const arr = attr.array as Float32Array;
   e.players.forEach((p, i) => {
     arr[i * 6] = p.pos.x; arr[i * 6 + 1] = 0.3; arr[i * 6 + 2] = p.pos.z;
     arr[i * 6 + 3] = p.moveTarget.x; arr[i * 6 + 4] = 0.3; arr[i * 6 + 5] = p.moveTarget.z;
   });
-  e.aiLinePos.needsUpdate = true;
+  attr.needsUpdate = true;
 }
