@@ -1,3 +1,4 @@
+import { useRef, type TouchEvent } from "react";
 import { Bug, Camera, Eye, Flag, Gauge, Menu as MenuIcon, Pause, Play, RotateCcw, Users, X } from "lucide-react";
 import type { Snapshot } from "../game/engine";
 import type { MatchEngine } from "../game/engine";
@@ -23,6 +24,7 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#05090c] text-white">
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <TouchJoystick engine={engine} />
 
       {/* top scrim */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[110px] bg-gradient-to-b from-black/75 to-transparent" />
@@ -269,4 +271,44 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 function Row({ k, v }: { k: string; v: string }) {
   return <div className="flex justify-between gap-2"><span className="text-zinc-500">{k}</span><span className="break-all text-right text-zinc-300">{v}</span></div>;
+}
+
+/** Touch virtual joystick for analogue movement on touch devices. Writes straight
+ * into `engine.touchStick`, which `humanControl` reads each frame alongside the
+ * gamepad and keyboard. */
+function TouchJoystick({ engine }: { engine: () => MatchEngine | null }) {
+  const baseRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef<HTMLDivElement>(null);
+  const anchor = useRef({ x: 0, y: 0 });
+  const maxDist = 44;
+  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+  const start = (ev: TouchEvent) => {
+    const t = ev.touches[0];
+    anchor.current = { x: t.clientX, y: t.clientY };
+    const eng = engine();
+    if (eng) eng.touchStick = { ix: 0, iz: 0, active: true };
+  };
+  const move = (ev: TouchEvent) => {
+    ev.preventDefault();
+    const t = ev.touches[0];
+    const nx = clamp((t.clientX - anchor.current.x) / maxDist);
+    const ny = clamp((t.clientY - anchor.current.y) / maxDist);
+    const eng = engine();
+    if (eng) eng.touchStick = { ix: nx, iz: ny, active: true };
+    stickRef.current!.style.transform = `translate(${nx * 18}px, ${ny * 18}px)`;
+  };
+  const end = () => {
+    anchor.current = { x: 0, y: 0 };
+    const eng = engine();
+    if (eng) eng.touchStick = { ix: 0, iz: 0, active: false };
+    stickRef.current!.style.transform = `translate(0, 0)`;
+  };
+  return (
+    <div className="absolute bottom-8 left-6 z-20" style={{ touchAction: "none" }}>
+        <div ref={baseRef} className="relative w-16 h-16 rounded-full border border-white/20 bg-black/60 backdrop-blur-sm" onTouchStart={(e) => start(e)} onTouchMove={(e) => { e.preventDefault(); move(e); }} onTouchEnd={end} onTouchCancel={end}>
+        <div ref={stickRef} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#22d3ee] shadow-[0_0_12px_rgba(34,211,238,0.6)]" />
+      </div>
+      <div className="text-[9px] text-zinc-500 text-center mt-1">move</div>
+    </div>
+  );
 }

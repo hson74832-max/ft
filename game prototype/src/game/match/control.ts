@@ -19,9 +19,30 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
   if (k.has("d") || k.has("arrowright")) ix += 1;
   if (k.has("w") || k.has("arrowup")) iz -= 1;
   if (k.has("s") || k.has("arrowdown")) iz += 1;
+  // Analog gamepad left stick (world X / Z axes, matching the WASD convention:
+  // stick right = +X, stick up = -Z). Reads the live pads each frame; headless
+  // runs have no navigator so this is a no-op there. An active stick overrides
+  // the digital WASD input.
+  let gamepadActive = false;
+  if (typeof navigator !== "undefined" && navigator.getGamepads) {
+    const pads = navigator.getGamepads();
+    for (let g = 0; g < pads.length; g++) {
+      const pad = pads[g];
+      if (!pad) continue;
+      const dead = 0.15;
+      const gx = Math.abs(pad.axes[0] ?? 0) > dead ? (pad.axes[0] ?? 0) : 0;
+      const gy = Math.abs(pad.axes[1] ?? 0) > dead ? (pad.axes[1] ?? 0) : 0;
+      if (gx !== 0 || gy !== 0) { ix = gx; iz = gy; gamepadActive = true; break; }
+    }
+  }
+  // Touch virtual joystick (updated by the MatchScreen overlay on every touch move).
+  if (e.touchStick.active) { ix = e.touchStick.ix; iz = e.touchStick.iz; gamepadActive = true; }
   const has = ix !== 0 || iz !== 0;
-  const sprint = k.has("shift");
-  const spd = sprint ? CONFIG.player.sprintSpeed : has ? CONFIG.player.runSpeed : 0;
+  // Analog magnitude: a light stick tilt walks, a full push runs. Keyboard is
+  // digital (magnitude 1). Shift or a near-full stick sprints.
+  const speedScale = has ? Math.min(1, Math.hypot(ix, iz)) : 0;
+  const sprint = k.has("shift") || (gamepadActive && speedScale > 0.8);
+  const spd = sprint ? CONFIG.player.sprintSpeed : has ? CONFIG.player.runSpeed * speedScale : 0;
   if (has) {
     _v1.set(ix, 0, iz).normalize();
     p.moveTarget.copy(p.pos).addScaledVector(_v1, 3);
@@ -52,7 +73,14 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
       if (p.tackleRecoveryT > 0) p.decisionReason = `Tackle recovery ${p.tackleRecoveryT.toFixed(2)}s`;
       else if (carrierIsProtected(e)) p.decisionReason = "Carrier is protected after a tackle";
       else {
-        const id = p.pos.distanceTo(e.ball.pos) > 1.6 ? "tackle_slide" : "tackle_stand";
+        // Pick stand vs slide by challenge geometry (distance to the carrier), not by
+        // distance to the ball — the ball is glued 0.48 m in front of the carrier, so
+        // measuring to the ball shifts every human engage range by ~0.5 m and made the
+        // human's effective stand/slide split inconsistent with the AI's (which uses
+        // carrier.pos with 1.5 m / 2.55 m thresholds).
+        const carrier = e.ball.possessedBy !== null ? e.players[e.ball.possessedBy] : null;
+        const carrierDist = carrier ? p.pos.distanceTo(carrier.pos) : p.pos.distanceTo(e.ball.pos);
+        const id = carrierDist < 1.5 ? "tackle_stand" : "tackle_slide";
         if (startAction(e, p, id, e.ball.pos.clone())) p.decisionReason = `Human ${id}`;
       }
     } else if (hasBall && !p.anim.busy) {
