@@ -58,8 +58,9 @@ export function resolveBallPlayerCollisions(e: MatchHost) {
     if (p.idx === e.ball.kickedBy && e.ball.kickAge < 0.3) continue;
     // A controllable ball reaching a ready player is received (possessionCheck), not
     // bounced. Balls faster than the trap limit still hit the body and deflect.
-    if (p.stumbleT <= 0 && distance < CONFIG.player.controlRadius + 0.35 && e.ball.pos.y < 0.85
-      && e.ball.speed <= CONFIG.player.maxTrapSpeed && (p.role !== "GK" || e.ball.handsRestrictedTeam === p.team)) {
+    const receivingScale = 0.5 + p.attributes.ballControl.groundReceiving / 150;
+    if (p.stumbleT <= 0 && distance < (CONFIG.player.controlRadius + 0.35) * receivingScale && e.ball.pos.y < 0.85
+      && e.ball.speed <= CONFIG.player.maxTrapSpeed * receivingScale && (p.role !== "GK" || e.ball.handsRestrictedTeam === p.team)) {
       continue;
     }
     const minimum = (p.role === "GK" ? 0.46 : 0.4) + R;
@@ -73,7 +74,8 @@ export function resolveBallPlayerCollisions(e: MatchHost) {
   e.ball.pos.x = p.pos.x + hitNx * ((p.role === "GK" ? 0.46 : 0.4) + R);
   e.ball.pos.z = p.pos.z + hitNz * ((p.role === "GK" ? 0.46 : 0.4) + R);
   const toward = e.ball.vel.x * hitNx + e.ball.vel.z * hitNz;
-  if (toward < 0 && p.role === "GK" && e.ball.handsRestrictedTeam !== p.team && e.ball.speed < CONFIG.ai.gkCatchSpeed && e.ball.pos.y < 2.0 && p.stumbleT <= 0) {
+  const gkCatchSpeed = CONFIG.ai.gkCatchSpeed * (0.5 + (p.attributes.goalkeeping.handling + p.attributes.goalkeeping.catching) / 300);
+  if (toward < 0 && p.role === "GK" && e.ball.handsRestrictedTeam !== p.team && e.ball.speed < gkCatchSpeed && e.ball.pos.y < 2.0 && p.stumbleT <= 0) {
     // Keeper got the body behind a catchable ball: gathered, not spilled.
     e.ball.possess(p.idx, p.team);
     e.ball.vel.set(0, 0, 0);

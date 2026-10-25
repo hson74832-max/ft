@@ -58,8 +58,11 @@ export function powerForArrival(distance: number, profile: { loft: number; maxPo
 /** Plan a pass to a named receiver: aim point, power and arrival time. */
 export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string, passTo: number | undefined, requestedPower?: number, restartKind?: string): PassPlan | null {
   const receiver = resolveNamedReceiver(e.players, passer, passTo, action.startsWith("pass_"));
-  const profile = passProfile(action);
-  if (!receiver || !profile || receiverOffsideAtKick(e, passer, receiver, restartKind)) return null;
+  const baseProfile = passProfile(action);
+  if (!receiver || !baseProfile || receiverOffsideAtKick(e, passer, receiver, restartKind)) return null;
+  const profile = { ...baseProfile };
+  // A deliberate foot return to the keeper stays on the grass even when distance made the AI choose pass_long.
+  if (receiver.role === "GK" && action.startsWith("pass_")) profile.loft = 0;
 
   const origin = e.ball.pos.clone();
   const assignment = !restartKind && e.frameWorld
@@ -134,7 +137,7 @@ export function recordPass(e: MatchHost, passer: EnginePlayer, action: string, p
  * using receiver space, lane clearance and pressure on the keeper — not a distance
  * threshold. Returns the chosen action, named receiver, predicted aim point and reason.
  */
-export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer): GkDistribution | null {
+export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer, urgent = false): GkDistribution | null {
   const mates = e.players.filter((p) => p.team === gk.team && p.idx !== gk.idx && p.role !== "GK");
   if (!mates.length) return null;
   const opponents = e.players.filter((p) => p.team !== gk.team);
@@ -168,7 +171,7 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer): GkDistri
   const bestShort = shortOpts[0];
   // If the clear short option is genuinely better than the best long option, play out;
   // otherwise go long to the free receiver. Pressured keepers still look long first.
-  const useShort = !!bestShort && (pressure < 4.2 || (bestShort.lane > 0.5 && bestShort.space > 3.2))
+  const useShort = !urgent && !!bestShort && (pressure < 4.2 || (bestShort.lane > 0.5 && bestShort.space > 3.2))
     && bestShort.score >= (longOpts[0]?.score ?? -1) - 0.05;
   const chosen = (useShort ? bestShort : undefined) ?? longOpts[0] ?? bestShort;
   if (!chosen) return null;

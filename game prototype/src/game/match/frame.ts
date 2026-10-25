@@ -24,9 +24,9 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
     players: e.players.map((p) => ({
       idx: p.idx, team: p.team, role: p.role, roleIdx: p.roleIdx, pos: p.pos.clone(), vel: p.vel.clone(),
       facing: p.facing, speed: p.speed, busy: p.anim.busy,
-      uninterruptible: p.anim.uninterruptible, cooldowns: p.anim.cooldowns,
+      uninterruptible: p.anim.uninterruptible, actionId: p.anim.actionId, cooldowns: p.anim.cooldowns,
       stamina: p.stamina, hasBall: e.ball.possessedBy === p.idx,
-      callForBall: p.callForBall, isHuman: p.isHuman, runSerial: p.runSerial, style: p.style,
+      callForBall: p.callForBall, isHuman: p.isHuman, runSerial: p.runSerial, style: p.style, attributes: p.attributes,
       moveTarget: p.moveTarget.clone(), desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
       tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
     })),
@@ -100,6 +100,8 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     }
 
     // integrate movement — real acceleration model (m/s²), no instant reversals
+    const acceleration = CONFIG.player.accel * THREE.MathUtils.clamp(0.5 + p.attributes.physical.acceleration / 150, 0.8, 1.15);
+    const deceleration = CONFIG.player.decel * THREE.MathUtils.clamp(0.5 + p.attributes.physical.balance / 150, 0.8, 1.15);
     const toTarget = _v1.copy(p.moveTarget).sub(p.pos); toTarget.y = 0;
     const distT = toTarget.length();
     let desired = _v2.set(0, 0, 0);
@@ -123,17 +125,17 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       const dot = sp > 0.05 && dLen > 0.05 ? (p.vel.x * desired.x + p.vel.z * desired.z) / (sp * dLen) : 1;
       if (dot < -0.2 && sp > 0.4) {
         // plant-and-cut: bleeding current momentum before committing to the new direction
-        const bleed = Math.min(sp, CONFIG.player.decel * dt);
+        const bleed = Math.min(sp, deceleration * dt);
         p.vel.x -= (p.vel.x / sp) * bleed;
         p.vel.z -= (p.vel.z / sp) * bleed;
       } else if (dLen > 1e-4) {
-        const rate = dLen > sp ? CONFIG.player.accel : CONFIG.player.decel;
+        const rate = dLen > sp ? acceleration : deceleration;
         const stepN = Math.min(dLen, rate * dt);
         p.vel.x += (desired.x - p.vel.x) / dLen * stepN;
         p.vel.z += (desired.z - p.vel.z) / dLen * stepN;
       } else if (sp > 0.05) {
         // no input: brake to a stop at the measured decel rate
-        const bleed = Math.min(sp, CONFIG.player.decel * dt);
+        const bleed = Math.min(sp, deceleration * dt);
         p.vel.x -= (p.vel.x / sp) * bleed;
         p.vel.z -= (p.vel.z / sp) * bleed;
       }
@@ -142,7 +144,10 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     const baseCap = p.role === "GK"
       ? CONFIG.player.gkSprintSpeed
       : (isHumanControlled && e.keys.has("shift") ? CONFIG.player.sprintSpeed : CONFIG.ai.maxSprint);
-    const maxSp = baseCap * (0.72 + 0.28 * p.stamina);
+    const speedRating = e.ball.possessedBy === p.idx
+      ? (p.attributes.physical.sprintSpeed + p.attributes.ballControl.runningPossession) / 2
+      : p.attributes.physical.sprintSpeed;
+    const maxSp = baseCap * THREE.MathUtils.clamp(0.5 + speedRating / 150, 0.8, 1.15) * (0.72 + 0.28 * p.stamina);
     if (p.vel.length() > maxSp) p.vel.setLength(maxSp);
     p.pos.addScaledVector(p.vel, dt);
     // walls clamp — restart takers may legally stand outside the field of play
@@ -180,10 +185,13 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       startAction(e, p, dYaw > 0 ? "turn_left" : "turn_right");
     }
     const rootTurning = p.anim.actionId === "turn_left" || p.anim.actionId === "turn_right" || p.anim.actionId === "turn_180";
-    if (!rootTurning) p.facing = turnTowards(p.facing, wantFacing, CONFIG.player.turnRate * dt);
+    if (!rootTurning) p.facing = turnTowards(p.facing, wantFacing, CONFIG.player.turnRate * (0.5 + p.attributes.physical.agility / 150) * dt);
 
     // stamina
-    p.stamina = THREE.MathUtils.clamp(p.stamina + dt * (p.speed > 6 ? -CONFIG.player.staminaDrain : CONFIG.player.staminaRegen), 0.2, 1);
+    const staminaRating = p.attributes.physical.stamina;
+    p.stamina = THREE.MathUtils.clamp(p.stamina + dt * (p.speed > 6
+      ? -CONFIG.player.staminaDrain * (1.5 - staminaRating / 150)
+      : CONFIG.player.staminaRegen * (0.5 + staminaRating / 150)), 0.2, 1);
 
     // anim update
     const velAng = p.speed > 0.3 ? yawOfVector(p.vel) : p.facing;

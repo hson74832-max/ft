@@ -17,15 +17,78 @@ export interface PlayerStyle {
   finesseSide: -1 | 1;
 }
 
+export interface PlayerAttributes {
+  physical: {
+    acceleration: number; sprintSpeed: number; agility: number; balance: number;
+    jumping: number; stamina: number; strength: number; physicalContact: number;
+    aggression: number; composure: number; reactions: number;
+  };
+  ballControl: {
+    dribbling: number; tightPossession: number; runningPossession: number;
+    groundReceiving: number; highBallReceiving: number;
+  };
+  passing: {
+    shortGroundPassing: number; longGroundPassing: number; crossing: number;
+    curve: number; freeKick: number; corner: number; vision: number; passPositioning: number;
+  };
+  shooting: {
+    finishing: number; shotPower: number; longShots: number; volleys: number;
+    penalties: number; heading: number; offensiveAwareness: number;
+  };
+  defending: {
+    defensiveAwareness: number; interceptions: number; standingTackle: number; slidingTackle: number;
+  };
+  goalkeeping: {
+    diving: number; handling: number; kicking: number; reflexes: number;
+    positioning: number; catching: number; parrying: number; reach: number;
+  };
+}
+
+const ROLE_ATTRIBUTES: Record<string, PlayerAttributes> = {
+  GK: {
+    physical: { acceleration: 58, sprintSpeed: 55, agility: 62, balance: 68, jumping: 74, stamina: 62, strength: 78, physicalContact: 74, aggression: 56, composure: 74, reactions: 84 },
+    ballControl: { dribbling: 45, tightPossession: 52, runningPossession: 45, groundReceiving: 60, highBallReceiving: 58 },
+    passing: { shortGroundPassing: 62, longGroundPassing: 70, crossing: 40, curve: 45, freeKick: 45, corner: 40, vision: 64, passPositioning: 66 },
+    shooting: { finishing: 25, shotPower: 68, longShots: 30, volleys: 30, penalties: 35, heading: 45, offensiveAwareness: 25 },
+    defending: { defensiveAwareness: 58, interceptions: 62, standingTackle: 45, slidingTackle: 52 },
+    goalkeeping: { diving: 84, handling: 82, kicking: 78, reflexes: 86, positioning: 84, catching: 84, parrying: 82, reach: 85 },
+  },
+  DEF: {
+    physical: { acceleration: 68, sprintSpeed: 70, agility: 66, balance: 76, jumping: 78, stamina: 75, strength: 84, physicalContact: 82, aggression: 80, composure: 74, reactions: 75 },
+    ballControl: { dribbling: 62, tightPossession: 72, runningPossession: 64, groundReceiving: 75, highBallReceiving: 74 },
+    passing: { shortGroundPassing: 75, longGroundPassing: 80, crossing: 62, curve: 65, freeKick: 60, corner: 60, vision: 72, passPositioning: 74 },
+    shooting: { finishing: 48, shotPower: 74, longShots: 60, volleys: 52, penalties: 64, heading: 82, offensiveAwareness: 56 },
+    defending: { defensiveAwareness: 86, interceptions: 85, standingTackle: 87, slidingTackle: 82 },
+    goalkeeping: { diving: 25, handling: 20, kicking: 45, reflexes: 30, positioning: 25, catching: 20, parrying: 25, reach: 30 },
+  },
+  MID: {
+    physical: { acceleration: 75, sprintSpeed: 75, agility: 81, balance: 79, jumping: 66, stamina: 84, strength: 69, physicalContact: 72, aggression: 69, composure: 82, reactions: 79 },
+    ballControl: { dribbling: 81, tightPossession: 85, runningPossession: 81, groundReceiving: 85, highBallReceiving: 79 },
+    passing: { shortGroundPassing: 85, longGroundPassing: 82, crossing: 77, curve: 81, freeKick: 76, corner: 77, vision: 87, passPositioning: 84 },
+    shooting: { finishing: 73, shotPower: 79, longShots: 80, volleys: 74, penalties: 78, heading: 69, offensiveAwareness: 79 },
+    defending: { defensiveAwareness: 73, interceptions: 76, standingTackle: 73, slidingTackle: 69 },
+    goalkeeping: { diving: 25, handling: 20, kicking: 45, reflexes: 30, positioning: 25, catching: 20, parrying: 25, reach: 30 },
+  },
+  FWD: {
+    physical: { acceleration: 85, sprintSpeed: 87, agility: 85, balance: 77, jumping: 75, stamina: 77, strength: 73, physicalContact: 72, aggression: 73, composure: 80, reactions: 83 },
+    ballControl: { dribbling: 86, tightPossession: 83, runningPossession: 88, groundReceiving: 83, highBallReceiving: 80 },
+    passing: { shortGroundPassing: 74, longGroundPassing: 69, crossing: 80, curve: 78, freeKick: 72, corner: 73, vision: 79, passPositioning: 76 },
+    shooting: { finishing: 88, shotPower: 85, longShots: 83, volleys: 85, penalties: 84, heading: 81, offensiveAwareness: 89 },
+    defending: { defensiveAwareness: 48, interceptions: 53, standingTackle: 45, slidingTackle: 43 },
+    goalkeeping: { diving: 25, handling: 20, kicking: 45, reflexes: 30, positioning: 25, catching: 20, parrying: 25, reach: 30 },
+  },
+};
+
 export interface WorldPlayer {
   idx: number; team: number; role: string; roleIdx: number;
   pos: THREE.Vector3; vel: THREE.Vector3; facing: number; speed: number;
-  busy: boolean; uninterruptible: boolean;
+  busy: boolean; uninterruptible: boolean; actionId?: string | null;
   cooldowns: Map<string, number>;
   stamina: number; hasBall: boolean;
   callForBall: boolean; isHuman: boolean;
   runSerial: number;
   style: PlayerStyle;
+  attributes?: PlayerAttributes;
   moveTarget?: THREE.Vector3;
   desiredSpeed?: number;
   pendingPassTo?: number;
@@ -123,7 +186,7 @@ export class AIController {
   passValidator: ((passerIdx: number, receiverIdx: number, action: string) => boolean) | null = null;
   passPreview: ((passerIdx: number, receiverIdx: number, action: string) => { target: THREE.Vector3; arrivalTime: number; power: number } | null) | null = null;
   /** Engine-provided distribution evaluator (space + lane + pressure), not a distance rule. */
-  gkDistribution: ((gkIdx: number) => { action: string; receiverIdx: number; target: THREE.Vector3; reason: string } | null) | null = null;
+  gkDistribution: ((gkIdx: number, urgent?: boolean) => { action: string; receiverIdx: number; target: THREE.Vector3; reason: string } | null) | null = null;
   private gkRead = new Map<number, { age: number; err: number; timing: number }>();
   /** Last kick cancelled at its contact frame, per player, with its failure streak. */
   private failedKicks = new Map<number, { key: string; count: number }>();
@@ -198,6 +261,50 @@ export class AIController {
     };
   }
 
+  sampleAttributes(role: string, idx?: number): PlayerAttributes {
+    // Attribute generation has its own stream, so adding ratings cannot change styles or AI choices.
+    const rng = new SeededRandom(streamSeed(this.matchSeed, `ai-attributes:${idx ?? role}`));
+    const base = ROLE_ATTRIBUTES[role] ?? ROLE_ATTRIBUTES.MID;
+    const rating = (value: number) => Math.round(THREE.MathUtils.clamp(value + rng.range(-4, 4), 1, 99));
+    return {
+      physical: {
+        acceleration: rating(base.physical.acceleration), sprintSpeed: rating(base.physical.sprintSpeed),
+        agility: rating(base.physical.agility), balance: rating(base.physical.balance),
+        jumping: rating(base.physical.jumping), stamina: rating(base.physical.stamina),
+        strength: rating(base.physical.strength), physicalContact: rating(base.physical.physicalContact),
+        aggression: rating(base.physical.aggression), composure: rating(base.physical.composure),
+        reactions: rating(base.physical.reactions),
+      },
+      ballControl: {
+        dribbling: rating(base.ballControl.dribbling), tightPossession: rating(base.ballControl.tightPossession),
+        runningPossession: rating(base.ballControl.runningPossession), groundReceiving: rating(base.ballControl.groundReceiving),
+        highBallReceiving: rating(base.ballControl.highBallReceiving),
+      },
+      passing: {
+        shortGroundPassing: rating(base.passing.shortGroundPassing), longGroundPassing: rating(base.passing.longGroundPassing),
+        crossing: rating(base.passing.crossing), curve: rating(base.passing.curve),
+        freeKick: rating(base.passing.freeKick), corner: rating(base.passing.corner),
+        vision: rating(base.passing.vision), passPositioning: rating(base.passing.passPositioning),
+      },
+      shooting: {
+        finishing: rating(base.shooting.finishing), shotPower: rating(base.shooting.shotPower),
+        longShots: rating(base.shooting.longShots), volleys: rating(base.shooting.volleys),
+        penalties: rating(base.shooting.penalties), heading: rating(base.shooting.heading),
+        offensiveAwareness: rating(base.shooting.offensiveAwareness),
+      },
+      defending: {
+        defensiveAwareness: rating(base.defending.defensiveAwareness), interceptions: rating(base.defending.interceptions),
+        standingTackle: rating(base.defending.standingTackle), slidingTackle: rating(base.defending.slidingTackle),
+      },
+      goalkeeping: {
+        diving: rating(base.goalkeeping.diving), handling: rating(base.goalkeeping.handling),
+        kicking: rating(base.goalkeeping.kicking), reflexes: rating(base.goalkeeping.reflexes),
+        positioning: rating(base.goalkeeping.positioning), catching: rating(base.goalkeeping.catching),
+        parrying: rating(base.goalkeeping.parrying), reach: rating(base.goalkeeping.reach),
+      },
+    };
+  }
+
   attackSign(team: number, half: 1 | 2): number {
     const firstHalf = team === 0 ? 1 : -1;
     return half === 1 ? firstHalf : -firstHalf;
@@ -218,15 +325,20 @@ export class AIController {
     const shotInbound = p.role === "GK" && !!this.readShot(p, snap, this.ownGoal(p.team, snap.half));
     // A 1v1 carrier moves the keeper's target metres per think gate, like a shot.
     const oneOnOne = p.role === "GK" && !!this.oneOnOneCarrier(p, snap, this.ownGoal(p.team, snap.half));
+    const pressuredKeeper = p.role === "GK" && p.hasBall && (!p.busy || p.actionId === "first_touch") && this.goalkeeperPressure(p, snap).urgent;
     const context = `${snap.half}:${snap.ballOwner}:${snap.passFlight?.launchedAt ?? -1}`;
-    if (!shotInbound && !oneOnOne && now < gate && this.decisionContext.get(p.idx) === context && this.lastDecision.has(p.idx)) return this.lastDecision.get(p.idx)!;
+    if (!shotInbound && !oneOnOne && !pressuredKeeper && now < gate && this.decisionContext.get(p.idx) === context && this.lastDecision.has(p.idx)) return this.lastDecision.get(p.idx)!;
     this.decisionContext.set(p.idx, context);
     // Real AI decision delay: outfield 0.28 s, goalkeeper 0.35 s. Use a
     // per-player stream so skipping one player's think (human/spectator mode)
     // cannot shift the random sequence of every other player.
     const rng = this.streamFor(p.idx);
     const baseDelay = p.role === "GK" ? CONFIG.ai.gkDecisionDelay : CONFIG.ai.reactionDelay;
-    this.nextThink.set(p.idx, now + baseDelay * rng.range(0.72, 1.3));
+    const reactions = p.role === "GK"
+      ? p.attributes?.goalkeeping.reflexes ?? 75
+      : p.attributes?.physical.reactions ?? 75;
+    const reactionScale = THREE.MathUtils.clamp(1.5 - reactions / 150, 0.8, 1.2);
+    this.nextThink.set(p.idx, now + baseDelay * reactionScale * rng.range(0.72, 1.3));
 
     const noise = (scale = 1) => rng.range(-1, 1) * CONFIG.ai.decisionNoise * scale;
     const d = (a: THREE.Vector3, b: THREE.Vector3) => a.distanceTo(b);
@@ -324,6 +436,7 @@ export class AIController {
     // Team AI: the side's pressing mentality scales how hard the whole unit
     // steps out and hunts the carrier, on top of each player's own style.
     const teamPressing = this.tactics.teamStyle(p.team, snap.matchSeed).pressing;
+    const tackleRisk = p.style.risk * (0.5 + (p.attributes?.physical.aggression ?? 75) / 150);
 
     // Back line steps out to close the central carrier AND the partner covers the shooting lane.
     if (p.role === "DEF" && centerThreat) {
@@ -336,7 +449,7 @@ export class AIController {
       block.x = THREE.MathUtils.clamp(block.x, -18.6, 18.6);
       const distance = d(p.pos, carrier.pos);
       const action = isClosest && distance < 1.55 && this.canTackle(p, snap, "tackle_stand") ? "tackle_stand"
-        : isClosest && distance < 2.5 && p.style.risk > 1.12 && this.canTackle(p, snap, "tackle_slide") ? "tackle_slide" : null;
+        : isClosest && distance < 2.5 && tackleRisk > 1.12 && this.canTackle(p, snap, "tackle_slide") ? "tackle_slide" : null;
       return this.store(p.idx, {
         moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing * teamPressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: `step:${Math.round(carrierLocal / 4)}:${isClosest ? 1 : 0}`,
@@ -351,7 +464,7 @@ export class AIController {
       const dist = d(p.pos, carrier.pos);
       let action: string | null = null;
       if (dist < 1.5 && this.canTackle(p, snap, "tackle_stand")) action = "tackle_stand";
-      else if (dist < 2.55 && dist > 1.4 && p.style.risk > 1.02 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
+      else if (dist < 2.55 && dist > 1.4 && tackleRisk > 1.02 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
       // Press the carrier's NEXT position, and when the defender has been played past
       // (he is ball-side of the carrier) cut back to the goal side instead of trailing
       // him — that is the run that ended up behind a winger at the touchline with the
@@ -484,6 +597,8 @@ export class AIController {
     // shooter's finishing style, minus block risk under pressure and fatigue.
     const shoot = inRange
       ? 0.26 + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
+        + ((p.attributes?.shooting.offensiveAwareness ?? 75) - 75) * 0.004
+        + ((distance > T.clearShotDistance ? p.attributes?.shooting.longShots ?? 75 : p.attributes?.shooting.finishing ?? 75) - 75) * 0.002
         - (pressed && shotLane < 0.4 ? 0.18 : 0) - novelty(shotKey) * 0.2 - (1 - p.stamina) * 0.18
       : -1;
     const shotId = ["shoot_normal", "shoot_finesse"].find((id) => this.can(p, id));
@@ -567,6 +682,7 @@ export class AIController {
         - this.repeatStreak(p.idx, key) * CONFIG.ai.noveltyPenalty
         - (failed && failed.key === `${id}:${mate.idx}` ? failed.count * CONFIG.ai.noveltyPenalty : 0)
         + noise(0.16) + jitter(key)
+        + ((p.attributes?.passing.vision ?? 75) - 75) * 0.002 * lane
         + (crossBall ? 0.16 + (lane > 0.4 ? 0.2 : 0) : 0)
         + (longSwitch && lane > T.minSafeLane ? 0.12 : 0);
       // Circulation with no threat: a square ball to a congested area costs more in
@@ -626,7 +742,9 @@ export class AIController {
     // Dribble score: space ahead and the chosen lane, minus pressure /
     // tackle risk and the stamina cost of carrying at pace.
     const carry = dribble.score + forwardSpace * 0.14 + (trigger?.active ? 0.06 : 0)
-      - (pressed ? 0.25 : 0) - (needsReset ? 0.12 : 0) - (1 - p.stamina) * 0.22
+      + ((p.attributes?.ballControl.dribbling ?? 75) - 75) * 0.003
+      - (pressed ? 0.25 * THREE.MathUtils.clamp(1.5 - (p.attributes?.physical.composure ?? 75) / 150, 0.65, 1.35) : 0)
+      - (needsReset ? 0.12 : 0) - (1 - p.stamina) * 0.22
       - THREE.MathUtils.clamp((2.5 - pressure) / 2.5, 0, 1) * 0.45;
     const utilities = { shoot, pass: best?.score ?? -1, dribble: carry, shotLane, opening, shotQuality: quality,
       pressure, carryLane, forwardSpace, reset: needsReset ? 1 : 0, passLane: best?.lane ?? 0,
@@ -696,6 +814,29 @@ export class AIController {
     return defenders.length >= 2 ? defenders[1] : 0;
   }
 
+  goalkeeperPressure(p: WorldPlayer, snap: WorldSnap): {
+    opponent: WorldPlayer | null; distance: number; closing: number; arrival: number; urgent: boolean;
+  } {
+    const reactions = p.attributes?.goalkeeping.reflexes ?? p.attributes?.physical.reactions ?? 75;
+    const horizon = 0.65 + reactions / 100 * 0.55;
+    let opponent: WorldPlayer | null = null;
+    let distance = Infinity, closing = 0, arrival = Infinity;
+    for (const q of snap.players) {
+      if (q.team === p.team || q.role === "GK") continue;
+      const d = d2(q.pos, p.pos);
+      const ux = d > 0.001 ? (p.pos.x - q.pos.x) / d : 0;
+      const uz = d > 0.001 ? (p.pos.z - q.pos.z) / d : 0;
+      const c = (q.vel.x - p.vel.x) * ux + (q.vel.z - p.vel.z) * uz;
+      const t = c > 0.5 ? Math.max(0, d - CONFIG.player.controlRadius) / c : Infinity;
+      const urgent = d < 1.55 || (d < CONFIG.ai.pressRadius && t < horizon);
+      const bestUrgent = arrival < horizon || distance < 1.55;
+      if (urgent === bestUrgent && t >= arrival && d >= distance) continue;
+      if (!urgent && bestUrgent) continue;
+      opponent = q; distance = d; closing = c; arrival = t;
+    }
+    return { opponent, distance, closing, arrival, urgent: !!opponent && (distance < 1.55 || arrival < horizon) };
+  }
+
   private goalkeeperDecision(
     p: WorldPlayer, mates: WorldPlayer[], snap: WorldSnap, _now: number,
     ownGoal: THREE.Vector3, atkGoal: THREE.Vector3, noise: (scale?: number) => number,
@@ -712,15 +853,19 @@ export class AIController {
         utilities: { recycleSupport: 1, lane: job.lane }, urgent: false };
     }
     if (p.hasBall) {
+      const pressure = this.goalkeeperPressure(p, snap);
+      const urgentFirstTouch = pressure.urgent && p.actionId === "first_touch";
       if (this.gkDistribution) {
-        const chosen = this.gkDistribution(p.idx);
+        const chosen = this.gkDistribution(p.idx, pressure.urgent);
         if (chosen) {
           return {
             moveTarget: p.pos.clone(), desiredSpeed: 0,
-            action: this.can(p, chosen.action) ? chosen.action : null,
+            action: urgentFirstTouch || this.can(p, chosen.action) ? chosen.action : null,
             actionTarget: chosen.target.clone(), passTo: chosen.receiverIdx,
             noveltyKey: `gk-dist:` + chosen.receiverIdx,
-            reason: chosen.reason, utilities: { distribution: 1 }, urgent: false,
+            reason: pressure.urgent ? `GK PRESS · ${pressure.distance.toFixed(1)}m @ ${pressure.closing.toFixed(1)}m/s · ${chosen.reason}` : chosen.reason,
+            utilities: { distribution: 1, pressure: pressure.distance, closing: pressure.closing, arrival: pressure.arrival },
+            urgent: pressure.urgent,
           };
         }
       }
@@ -738,10 +883,11 @@ export class AIController {
       const style = p.style.directness + p.style.risk * 0.3;
       const action = candidates[0]?.dist > 11 || style > 1.45 ? "gk_punt" : "gk_roll";
       return {
-        moveTarget: p.pos.clone(), desiredSpeed: 0, action: this.can(p, action) ? action : null,
+        moveTarget: p.pos.clone(), desiredSpeed: 0, action: urgentFirstTouch || this.can(p, action) ? action : null,
         actionTarget: target, passTo: candidates[0]?.m.idx, noveltyKey: `gk-distribution:${candidates[0]?.m.idx ?? -1}`,
-        reason: `GK distribute · ${action} → ${candidates[0]?.m.role ?? "space"}`,
-        utilities: { distribution: candidates[0]?.score ?? 0.5 }, urgent: false,
+        reason: `${pressure.urgent ? "GK PRESS · " : ""}GK distribute · ${action} → ${candidates[0]?.m.role ?? "space"}`,
+        utilities: { distribution: candidates[0]?.score ?? 0.5, pressure: pressure.distance, closing: pressure.closing, arrival: pressure.arrival },
+        urgent: pressure.urgent,
       };
     }
 
@@ -770,7 +916,9 @@ export class AIController {
       const goalHalf = CONFIG.pitch.goalWidth / 2 - CONFIG.ai.gkNearPostInset;
       const keeperTarget = new THREE.Vector3(p.pos.x, 0, THREE.MathUtils.clamp(shot.z, -goalHalf, goalHalf));
       const util = { save: shot.reachable ? 1 : 0, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach };
-      if (snap.ballKickAge !== undefined && snap.ballKickAge < CONFIG.ai.gkReactionTime) {
+      const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
+      const reactionTime = CONFIG.ai.gkReactionTime * THREE.MathUtils.clamp(1.5 - reflexes / 150, 0.65, 1.25);
+      if (snap.ballKickAge !== undefined && snap.ballKickAge < reactionTime) {
         // Human reaction time: the keeper has not processed the strike yet.
         return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: null, reason: `GK reacting · ${(snap.ballKickAge * 1000) | 0}ms`, utilities: util, urgent: true };
       }
@@ -778,7 +926,10 @@ export class AIController {
       const commit = shot.timeLeft <= CONFIG.ai.gkDiveContactTime + 0.06 && !p.busy;
       if (commit) {
         let action: string;
-        if (shot.lateral < 0.75 && shot.height < 1.75) action = ballSpeed < CONFIG.ai.gkCatchSpeed ? "gk_catch" : "gk_parry";
+        const handling = p.attributes?.goalkeeping.handling ?? 75;
+        const catching = p.attributes?.goalkeeping.catching ?? 75;
+        const catchSpeed = CONFIG.ai.gkCatchSpeed * (0.5 + (handling + catching) / 300);
+        if (shot.lateral < 0.75 && shot.height < 1.75) action = ballSpeed < catchSpeed ? "gk_catch" : "gk_parry";
         else if (shot.lateral < 0.75) action = "gk_parry";
         else {
           // Dive clip root motion is in facing space; pick the clip that moves toward the ball.
@@ -834,7 +985,10 @@ export class AIController {
       const stance = ball.clone().setY(0).addScaledVector(toGoal, CONFIG.ai.catchRadius);
       stance.x = THREE.MathUtils.clamp(stance.x, -CONFIG.pitch.length / 2 + 0.3, CONFIG.pitch.length / 2 - 0.3);
       let action: string | null = null;
-      if (inBox && ballDist < CONFIG.ai.catchRadius + 0.5 && (oneOnOne.tackleProtectionT ?? 0) <= 0 && this.can(p, "gk_catch")) action = "gk_catch";
+      const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
+      const diving = p.attributes?.goalkeeping.diving ?? 75;
+      const smotherRange = CONFIG.ai.catchRadius + 1.4 * THREE.MathUtils.clamp((reflexes + diving) / 170, 0.75, 1.1);
+      if (inBox && ball.y < 0.75 && ballDist < smotherRange && (oneOnOne.tackleProtectionT ?? 0) <= 0 && this.can(p, "gk_catch")) action = "gk_catch";
       else if (!inBox && ballDist < 2.5 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
       return {
         moveTarget: stance, desiredSpeed: CONFIG.player.gkSprintSpeed,
@@ -980,7 +1134,8 @@ export class AIController {
     for (let t = 0.08; t <= CONFIG.ai.interceptHorizon + 0.001; t += step) {
       const point = this.projectBall(snap, t).pos;
       for (const player of players) {
-        const speed = CONFIG.ai.maxSprint * (0.78 + player.stamina * 0.22);
+        const speed = CONFIG.ai.maxSprint * (0.78 + player.stamina * 0.22)
+          * (0.5 + ((player.attributes?.physical.sprintSpeed ?? 75) + (player.attributes?.defending.interceptions ?? 75)) / 300);
         const arrival = player.pos.distanceTo(point) / Math.max(1, speed);
         const slack = arrival - t;
         if (!best || slack < best.slack - 0.001 || (Math.abs(slack - best.slack) < 0.001
@@ -1077,16 +1232,21 @@ export class AIController {
 
     const lateral = Math.abs(z - p.pos.z);
     // Time the keeper can actually use: arrival time minus the unexpired reaction delay.
-    const reactionLeft = Math.max(0, CONFIG.ai.gkReactionTime - (snap.ballKickAge ?? 1));
+    const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
+    const reactionTime = CONFIG.ai.gkReactionTime * THREE.MathUtils.clamp(1.5 - reflexes / 150, 0.65, 1.25);
+    const reactionLeft = Math.max(0, reactionTime - (snap.ballKickAge ?? 1));
     const usable = Math.max(0, t - reactionLeft);
     const dive = CONFIG.ai.gkDiveContactTime;
     // Standing arm reach + dive extension (only fully available if there is time for the
     // dive clip to reach its contact frame) + lateral shuffle before committing.
-    const diveExt = usable >= dive ? CONFIG.ai.gkDiveExtension : CONFIG.ai.gkDiveExtension * (usable / dive);
+    const diving = p.attributes?.goalkeeping.diving ?? 75;
+    const fullDiveExtension = CONFIG.ai.gkDiveExtension * (0.5 + diving / 150);
+    const diveExt = usable >= dive ? fullDiveExtension : fullDiveExtension * (usable / dive);
     const shuffle = Math.min(CONFIG.ai.gkShuffleMax, Math.max(0, usable - dive) * CONFIG.player.gkSprintSpeed * CONFIG.ai.gkShuffleFactor);
     // High corners require a rising dive and low corners a collapsing one; both cost reach.
     const heightPenalty = height > 1.85 ? 0.6 : height > 1.5 ? 0.35 : height < 0.25 ? 0.25 : 0;
-    const reach = CONFIG.ai.gkStandingReach + diveExt + shuffle - heightPenalty;
+    const reachRating = p.attributes?.goalkeeping.reach ?? 75;
+    const reach = CONFIG.ai.gkStandingReach * (0.5 + reachRating / 150) + diveExt + shuffle - heightPenalty;
     return { z, height, timeLeft: t, lateral, reach, reachable: lateral <= reach };
   }
 

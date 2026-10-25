@@ -162,6 +162,13 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   score += 0.04 * THREEClamp(approachGain, 0, 1);
   score += 0.03 * (THREEClamp(p.stamina, 0, 1) - 0.7);
   score += 0.03 * THREEClamp(p.style.pressing - 0.8, -0.3, 0.5);
+  const tackleRating = action === "tackle_slide" ? p.attributes.defending.slidingTackle : p.attributes.defending.standingTackle;
+  score += 0.12 * THREEClamp((tackleRating - 75) / 25, -1, 1);
+  if (carrier) {
+    const resistance = (carrier.attributes.ballControl.tightPossession + carrier.attributes.physical.strength
+      + carrier.attributes.physical.balance + carrier.attributes.physical.physicalContact) / 4;
+    score -= 0.08 * THREEClamp((resistance - 75) / 25, -1, 1);
+  }
   score -= 0.05 * THREEClamp((carrier?.speed ?? 0) / speedDenom, 0, 1);
   score -= 0.04 * THREEClamp(p.speed / speedDenom, 0, 1);
   score -= 0.25 * THREEClamp(-frontDot - 0.3, 0, 1);      // blind-side / from behind
