@@ -7,7 +7,7 @@ export type SnapshotDTO = ReturnType<typeof buildSnapshot>;
 
 /** Read-only HUD view of the match for the React layer. */
 export function buildSnapshot(e: MatchHost) {
-    const sel = e.players[e.selectedIdx] ?? e.players[e.humanIdx];
+    const sel = e.players[e.selectedIdx] ?? e.players[e.humanIdx] ?? e.players[0];
     return {
       score: [...e.rules.score], clock: e.rules.clock, elapsedClock: e.rules.elapsedClock,
       half: e.rules.half, halfLabel: e.rules.halfLabel,
@@ -44,6 +44,9 @@ export function buildSnapshot(e: MatchHost) {
       contactTotal: e.contactTotal,
       passCharge: e.passCharge, shootCharge: e.shootCharge,
       timeScale: e.timeScale, aimRaw: e.aimRaw, foulsOn: e.foulsOn,
-      offsideOn: CONFIG.ai.offside,
+      showAIDebug: e.showAIDebug,
+      // Coerced: the Settings panel flips this flag through a mutable view of
+      // the (type-level readonly) CONFIG, so don't trust the literal type.
+      offsideOn: !!CONFIG.ai.offside,
     };
   }

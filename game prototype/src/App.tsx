@@ -19,9 +19,14 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
 
-  pausedRef.current = paused;
+  // Mirror into a ref for the rAF loop. Done in an effect, not during render:
+  // writing a ref while rendering is unsafe under concurrent rendering (the
+  // render may be discarded, leaving the loop reading a pause state that was
+  // never committed to the screen).
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
 
   const startMatch = useCallback((spectate: boolean) => {
+    setPanel(null);
     setMode(spectate ? "spectate" : "play");
     setSnap(null);
     setPaused(false);
@@ -77,12 +82,17 @@ export default function App() {
   useEffect(() => {
     if (screen !== "menu") return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Enter") startMatch(false);
-      if (event.key === "Escape") setPanel(null);
+      if (event.key === "Escape") { setPanel(null); return; }
+      if (event.key !== "Enter" || panel) return;
+      // Enter on a focused control must activate that control, not also kick
+      // off a match behind it.
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.tagName === "A" || target.isContentEditable)) return;
+      startMatch(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [screen, startMatch]);
+  }, [screen, startMatch, panel]);
 
   useEffect(() => {
     if (screen !== "match") return;
@@ -123,17 +133,8 @@ export default function App() {
         onRestart={restartMatch}
         onMenu={toMenu}
         onSwitch={() => engineRef.current?.switchToNearest(true)}
-        engine={() => engineRef.current!}
+        engine={() => engineRef.current}
       />
-      {panel && (
-        <PanelModal
-          panel={panel}
-          onClose={() => setPanel(null)}
-          family={family}
-          onFamily={(next) => { setFamily(next); setPanel(null); restartMatch(); }}
-          engine={() => engineRef.current}
-        />
-      )}
     </>
   );
 }

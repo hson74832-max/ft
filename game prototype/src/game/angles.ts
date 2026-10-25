@@ -8,11 +8,19 @@
  * not. Everything angular funnels through here.
  */
 
-/** Wraps an angle into (-π, π]. */
+const TAU = Math.PI * 2;
+
+/**
+ * Wraps an angle into (-π, π].
+ *
+ * Modulo, not a subtraction loop: the loop form never terminates for ±Infinity
+ * (subtracting 2π from Infinity leaves Infinity) and crawls for huge finite
+ * inputs. NaN in → NaN out, exactly as the loop behaved.
+ */
 export function wrapAngle(angle: number): number {
-  let a = angle;
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
+  let a = angle % TAU;
+  if (a > Math.PI) a -= TAU;
+  else if (a <= -Math.PI) a += TAU;
   return a;
 }
 

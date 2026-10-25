@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { MEDIAPIPE_CONNECTIONS, type MaskData, type PoseFrame } from './motion';
 import type { Person, Rgb, Roi } from './processor';
 import type { OtherPlayer } from './SkeletonCanvas';
@@ -58,7 +58,9 @@ export default function SourceCanvas(props: Props) {
   const dirtyRef = useRef(true);
   const mediaRef = useRef<{ media: CanvasImageSource; mw: number; mh: number } | null>(null);
   const live = useRef(props);
-  live.current = props;
+  // Layout effect, not a render-time write: a discarded concurrent render
+  // must not publish props the screen never committed.
+  useLayoutEffect(() => { live.current = props; });
 
   // Native playback at the timeline's speed. Without playbackRate the video ran
   // at 1x while the pose timeline ran at e.g. 0.5x, drifting and re-seeking
@@ -394,7 +396,7 @@ export default function SourceCanvas(props: Props) {
   return (
     <div className="source-canvas-wrap">
       {sourceUrl && !isGif ? (
-        <video ref={videoRef} src={sourceUrl} muted playsInline loop preload="auto" className="hidden-media" />
+        <video ref={videoRef} src={sourceUrl} muted playsInline preload="auto" className="hidden-media" />
       ) : (
         <img ref={imgRef} src={sourceUrl || fallbackImage} alt="" className="hidden-media" crossOrigin={sourceUrl ? undefined : 'anonymous'} />
       )}

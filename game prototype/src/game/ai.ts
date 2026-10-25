@@ -823,10 +823,15 @@ export class AIController {
     if (!Number.isFinite(t) || t > 2.5) return null;
     const z = b.z + (v.z / horizontal) * along;
     const height = Math.max(B.radius, b.y + v.y * t - 0.5 * B.gravity * t * t);
-    // Must be heading on target (with a small margin for late curl).
+    // Must be heading on target (with a small margin for late curl). Both tests
+    // are made where the ball crosses the GOAL line: height was previously read
+    // at the keeper's line, so a dipping lob that clears the keeper but drops
+    // under the bar was judged "over" and never attacked.
     const alongGoal = Math.abs(ownGoal.x - b.x) * (horizontal / Math.abs(v.x));
     const goalZ = b.z + (v.z / horizontal) * alongGoal;
-    if (Math.abs(goalZ) > CONFIG.pitch.goalWidth / 2 + 0.45 || height > CONFIG.pitch.goalHeight + 0.4) return null;
+    const tGoal = (Math.exp(kDrag * alongGoal) - 1) / (kDrag * horizontal);
+    const goalLineHeight = b.y + v.y * tGoal - 0.5 * B.gravity * tGoal * tGoal;
+    if (Math.abs(goalZ) > CONFIG.pitch.goalWidth / 2 + 0.45 || goalLineHeight > CONFIG.pitch.goalHeight + 0.4) return null;
 
     const lateral = Math.abs(z - p.pos.z);
     // Time the keeper can actually use: arrival time minus the unexpired reaction delay.

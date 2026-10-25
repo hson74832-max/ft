@@ -89,12 +89,9 @@ export function placeForRestart(e: MatchHost) {
     }
     const sign = e.ai.attackSign(pr.team, e.rules.half);
     const takers = e.players.filter((p) => p.team === pr.team && (pr.kind === "goal_kick" ? p.role === "GK" : p.role !== "GK"));
+    // Kickoffs never reach this branch — resetPositions stages their taker.
     const selectTaker = () => {
       if (pr.kind === "goal_kick") return takers[0] ?? null;
-      if (pr.kind === "kickoff") {
-        const candidates = takers.filter((p) => p.role === "MID" || p.role === "FWD");
-        return e.rng.weighted(candidates.map((p) => ({ value: p, weight: 0.6 + p.style.directness * 0.4 })));
-      }
       // Throw-ins and corners are taken by the closest eligible outfielder to the exit point / flag.
       const ranked = [...takers].sort((a, b) => {
         const da = Math.hypot(a.pos.x - pr.pos[0], a.pos.z - pr.pos[1]);

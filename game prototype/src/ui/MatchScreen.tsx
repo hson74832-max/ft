@@ -14,7 +14,8 @@ interface Props {
   onRestart: () => void;
   onMenu: () => void;
   onSwitch: () => void;
-  engine: () => MatchEngine;
+  /** Null until the App effect has constructed the engine (first paint). */
+  engine: () => MatchEngine | null;
 }
 
 export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPause, onRestart, onMenu, onSwitch, engine }: Props) {
@@ -41,10 +42,10 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
       </div>
 
       <div className="absolute right-4 top-3 z-20 flex items-center gap-1.5">
-        <QuickBtn icon={<Camera className="h-3.5 w-3.5" />} label={snap?.cameraMode ?? "broadcast"} onClick={() => { const e = engine(); e.cameraMode = e.cameraMode === "broadcast" ? "follow" : e.cameraMode === "follow" ? "free" : "broadcast"; }} />
-        <QuickBtn icon={<Eye className="h-3.5 w-3.5" />} label={spectator ? "spectating" : "playing"} active={spectator} onClick={() => { engine().spectator = !engine().spectator; }} />
+        <QuickBtn icon={<Camera className="h-3.5 w-3.5" />} label={snap?.cameraMode ?? "broadcast"} onClick={() => { const e = engine(); if (e) e.cameraMode = e.cameraMode === "broadcast" ? "follow" : e.cameraMode === "follow" ? "free" : "broadcast"; }} />
+        <QuickBtn icon={<Eye className="h-3.5 w-3.5" />} label={spectator ? "spectating" : "playing"} active={spectator} onClick={() => { const e = engine(); if (e) e.spectator = !e.spectator; }} />
         <QuickBtn icon={<Users className="h-3.5 w-3.5" />} label="switch" onClick={onSwitch} />
-        <QuickBtn icon={<RotateCcw className="h-3.5 w-3.5" />} label="reset" onClick={() => engine().resetPositions("kickoff")} />
+        <QuickBtn icon={<RotateCcw className="h-3.5 w-3.5" />} label="reset" onClick={() => engine()?.resetPositions("kickoff")} />
         <QuickBtn icon={<Bug className="h-3.5 w-3.5" />} label="data" active={debugOpen} onClick={onDebug} />
       </div>
 
@@ -173,7 +174,7 @@ function Meter({ label, value, color }: { label: string; value: number; color: s
   );
 }
 
-function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => MatchEngine; onClose: () => void }) {
+function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => MatchEngine | null; onClose: () => void }) {
   return (
     <div className="absolute bottom-0 right-0 top-0 z-30 flex w-[330px] flex-col border-l border-white/10 bg-[#0a0f12]/95 backdrop-blur-md">
       <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
@@ -250,11 +251,11 @@ function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => 
         <section className="space-y-1.5">
           <Label>Tuning</Label>
           <label className="block text-[10px] font-bold">Time scale {(snap.timeScale).toFixed(2)}×
-            <input type="range" min={0.1} max={2} step={0.05} value={snap.timeScale} onChange={(e) => { engine().timeScale = +e.target.value; }} className="w-full accent-[#c8f31d]" />
+            <input type="range" min={0.1} max={2} step={0.05} value={snap.timeScale} onChange={(ev) => { const e = engine(); if (e) e.timeScale = +ev.target.value; }} className="w-full accent-[#c8f31d]" />
           </label>
-          <button onClick={() => { engine().aimRaw = !engine().aimRaw; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">Raw aim: {snap.aimRaw ? "ON" : "OFF"}</button>
-          <button onClick={() => { engine().foulsOn = !engine().foulsOn; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">Fouls: {snap.foulsOn ? "ON" : "OFF"}</button>
-          <button onClick={() => { engine().showAIDebug = !engine().showAIDebug; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">AI target lines: {engine().showAIDebug ? "ON" : "OFF"}</button>
+          <button onClick={() => { const e = engine(); if (e) e.aimRaw = !e.aimRaw; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">Raw aim: {snap.aimRaw ? "ON" : "OFF"}</button>
+          <button onClick={() => { const e = engine(); if (e) e.foulsOn = !e.foulsOn; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">Fouls: {snap.foulsOn ? "ON" : "OFF"}</button>
+          <button onClick={() => { const e = engine(); if (e) e.showAIDebug = !e.showAIDebug; }} className="w-full rounded bg-white/5 px-2 py-1 text-left text-[10px] font-bold">AI target lines: {snap.showAIDebug ? "ON" : "OFF"}</button>
         </section>
       </div>
     </div>

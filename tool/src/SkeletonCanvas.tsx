@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { BONES, type JointName, type PoseFrame, type Vec3 } from './motion';
 
 export type ThemeName = 'classic' | 'mono' | 'neon' | 'sunset';
@@ -59,8 +59,12 @@ export default function SkeletonCanvas({ frame, showGrid, showLabels, rotation, 
 
   // Read through a ref so the render loop is subscribed once for the lifetime of
   // the component rather than being torn down and rebuilt on every pose frame.
+  // Updated in a layout effect, not during render: a discarded concurrent
+  // render must not publish props the screen never committed.
   const live = useRef({ frame, showGrid, showLabels, rotation, style, others, view, activeLabel });
-  live.current = { frame, showGrid, showLabels, rotation, style, others, view, activeLabel };
+  useLayoutEffect(() => {
+    live.current = { frame, showGrid, showLabels, rotation, style, others, view, activeLabel };
+  });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -138,7 +142,10 @@ export default function SkeletonCanvas({ frame, showGrid, showLabels, rotation, 
       const project = (p: Vec3) => {
         const x = p.x * cos - p.z * sin;
         const z = p.x * sin + p.z * cos;
-        const perspective = 1 / (1 + z * st.perspective);
+        // Clamp the divisor: at the slider's max perspective a joint 5 m behind
+        // the origin would make it exactly 0 (and negative beyond), flinging
+        // the skeleton to Infinity / mirrored coordinates.
+        const perspective = 1 / Math.max(0.15, 1 + z * st.perspective);
         return {
           x: w * 0.5 + x * scale * perspective,
           y: h * 0.83 - p.y * scale * perspective + z * scale * 0.27,

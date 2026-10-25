@@ -16,9 +16,11 @@ export class SeededRandom {
   next(): number { return this.nextUint() / 0x100000000; }
   range(min: number, max: number): number { return min + (max - min) * this.next(); }
   int(min: number, maxInclusive: number): number { return min + Math.floor(this.next() * (maxInclusive - min + 1)); }
-  pick<T>(items: readonly T[]): T { return items[this.int(0, items.length - 1)]; }
 
   weighted<T>(items: readonly { value: T; weight: number }[]): T {
+    // Fail loudly and clearly: with no items there is no honest value to return,
+    // and the old fall-through (`items[-1].value`) threw a cryptic TypeError.
+    if (!items.length) throw new Error("SeededRandom.weighted called with no items");
     const total = items.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
     let cursor = this.next() * Math.max(total, Number.EPSILON);
     for (const item of items) {

@@ -158,6 +158,7 @@ export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "m
     throw new Error("Missing jointOrder, boneOrder, bindPose, or frames");
   }
   if (doc.bindPose.length !== doc.jointOrder.length * 3) throw new Error("bindPose must contain x/y/z for every joint");
+  if (!doc.bindPose.every(Number.isFinite)) throw new Error("bindPose contains non-finite coordinates");
   const jointMap = new Map(doc.jointOrder.map((name, i) => [name, i]));
   // Every joint the retargeter reads must exist, otherwise limbs would silently freeze.
   for (const mapping of FIELDMOTION_BONE_MAP) {
@@ -173,23 +174,44 @@ export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "m
 
   const metadata = doc.metadata ?? {};
   const category = ALLOWED_CATEGORIES.has(metadata.category as ClipCategory) ? metadata.category as ClipCategory : "locomotion";
-  const duration = Math.max(0.01, doc.frames[doc.frames.length - 1]?.t ?? 0.01);
-  const events = (metadata.frameEvents ?? []).filter((e) => Number.isFinite(e.t) && typeof e.type === "string").map((e) => ({ t: Math.max(0, e.t), type: e.type }));
+  // The document is untrusted JSON wearing a TypeScript costume: every metadata
+  // number is re-checked for finiteness here. `typeof x === "number"` is not
+  // enough (NaN passes it, and JSON `1e999` parses to Infinity), and a NaN
+  // duration/contactFrame would silently wedge the animation controller —
+  // normalized time becomes NaN and the ball-contact event never fires.
+  const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  const lastT = doc.frames[doc.frames.length - 1]?.t;
+  const duration = Math.max(0.01, finite(lastT) ? lastT : 0.01);
+  const events = (Array.isArray(metadata.frameEvents) ? metadata.frameEvents : [])
+    .filter((e) => !!e && Number.isFinite(e.t) && typeof e.type === "string")
+    .map((e) => ({ t: Math.max(0, e.t), type: e.type }));
   const contact = events.find((e) => e.type.toLowerCase() === "ball_contact");
-  const contactFrame = typeof metadata.contactFrame === "number" ? metadata.contactFrame : contact ? contact.t / duration : undefined;
-  const slot = (metadata.slot ?? metadata.link) as string | undefined;
+  const contactFrame = finite(metadata.contactFrame) ? metadata.contactFrame : contact ? contact.t / duration : undefined;
+  const rawSlot = metadata.slot ?? metadata.link;
+  const slot = typeof rawSlot === "string" ? rawSlot : undefined;
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  const rawWindow = metadata.interruptible;
+  const interruptible: [number, number] = Array.isArray(rawWindow) && finite(rawWindow[0]) && finite(rawWindow[1])
+    ? [Math.min(clamp01(rawWindow[0]), clamp01(rawWindow[1])), Math.max(clamp01(rawWindow[0]), clamp01(rawWindow[1]))]
+    : [0.72, 1];
+  const rawBand = metadata.speedBand;
+  const speedBand: [number, number] | undefined = Array.isArray(rawBand) && finite(rawBand[0]) && finite(rawBand[1])
+    ? [Math.min(rawBand[0], rawBand[1]), Math.max(rawBand[0], rawBand[1])]
+    : undefined;
   const meta: ClipMeta = {
     id,
     category,
-    loop: metadata.loop ?? false,
-    rootMotion: metadata.rootMotion ?? false,
-    duration: metadata.duration ?? duration,
-    speedBand: metadata.speedBand,
+    loop: metadata.loop === true,
+    rootMotion: metadata.rootMotion === true,
+    duration: finite(metadata.duration) && metadata.duration > 0 ? metadata.duration : duration,
+    speedBand,
     contactFrame,
-    interruptible: metadata.interruptible ?? [0.72, 1],
-    priority: metadata.priority ?? 5,
-    tags: metadata.tags ?? ["fieldmotion-json", ...(contactFrame !== undefined ? ["ball_contact"] : []), ...(slot ? [`slot:${slot}`] : [])],
-    description: metadata.description ?? `FieldMotion pose clip: ${source}`,
+    interruptible,
+    priority: finite(metadata.priority) ? metadata.priority : 5,
+    tags: Array.isArray(metadata.tags)
+      ? metadata.tags.filter((t): t is string => typeof t === "string")
+      : ["fieldmotion-json", ...(contactFrame !== undefined ? ["ball_contact"] : []), ...(slot ? [`slot:${slot}`] : [])],
+    description: typeof metadata.description === "string" ? metadata.description : `FieldMotion pose clip: ${source}`,
   };
   if (meta.contactFrame !== undefined && (meta.contactFrame < 0 || meta.contactFrame > 1)) throw new Error("contactFrame must be normalized to 0..1");
 
@@ -206,7 +228,9 @@ export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "m
     if (!Number.isFinite(frame.t) || frame.t < previousT) throw new Error(`frames[${frameIndex}].t must be finite and sorted`);
     previousT = frame.t;
     if (!Array.isArray(frame.j) || frame.j.length !== doc.jointOrder.length * 3) throw new Error(`frames[${frameIndex}].j has the wrong number of coordinates`);
+    if (!frame.j.every(Number.isFinite)) throw new Error(`frames[${frameIndex}].j contains non-finite coordinates`);
     if (frame.q && frame.q.length !== doc.boneOrder.length * 4) throw new Error(`frames[${frameIndex}].q needs one x/y/z/w quaternion per boneOrder item`);
+    if (frame.q && !frame.q.every(Number.isFinite)) throw new Error(`frames[${frameIndex}].q contains non-finite values`);
     // Joint positions are the authority: they preserve limb lengths and resolve to
     // the rig through the hierarchy, independent of the generator's bind pose.
     const get = (name: string) => jointAt(frame.j, name);
@@ -348,13 +372,20 @@ export function validateFieldMotionAgainstSkeleton(clip: FieldMotionClip): strin
  * (rather than merely being accepted by the parser).
  */
 export function rigBoneWorldDirection(pose: Pose, bone: string): THREE.Vector3 {
+  const rest = REST_DIRECTIONS.get(bone);
+  if (!rest) throw new Error(`unknown bone '${bone}'`);
   const chain: string[] = [];
   let cursor: string | null = bone;
-  while (cursor) { chain.unshift(cursor); cursor = (SKELETON_CONTRACT.bones.find((b) => b.name === cursor)?.parent ?? null) as string | null; }
+  while (cursor) {
+    chain.unshift(cursor);
+    // Bound the parent walk: a cyclic skeleton contract must not spin forever.
+    if (chain.length > SKELETON_CONTRACT.bones.length) throw new Error(`skeleton parent cycle at '${bone}'`);
+    cursor = (SKELETON_CONTRACT.bones.find((b) => b.name === cursor)?.parent ?? null) as string | null;
+  }
   const rotation = new THREE.Quaternion();
   for (const name of chain) {
     const e = pose.get(name);
     if (e) rotation.multiply(new THREE.Quaternion().setFromEuler(e));
   }
-  return REST_DIRECTIONS.get(bone)!.clone().applyQuaternion(rotation).normalize();
+  return rest.clone().applyQuaternion(rotation).normalize();
 }

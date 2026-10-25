@@ -136,7 +136,9 @@ function Settings({ engine }: { engine: () => MatchEngine | null }) {
       </div>
       <div>
         <SectionLabel>Rules</SectionLabel>
-        <ToggleRow label="Offside enforcement" value={!!ai.offside} onChange={() => { ai.offside = ai.offside ? 0 : 1; tick((x) => x + 1); }} />
+        {/* Boolean flag, not one of the numeric sliders: store a real boolean
+            (the old 0/1 writes left the flag number-typed for snapshot/UI). */}
+        <ToggleRow label="Offside enforcement" value={CONFIG.ai.offside} onChange={() => { (CONFIG.ai as unknown as { offside: boolean }).offside = !CONFIG.ai.offside; tick((x) => x + 1); }} />
         <ToggleRow label="Fouls → free kick / penalty" value={!!e?.foulsOn} disabled={!e} onChange={() => { if (e) { e.foulsOn = !e.foulsOn; tick((x) => x + 1); } }} />
         <ToggleRow label="Raw aim (no pass assist)" value={!!e?.aimRaw} disabled={!e} onChange={() => { if (e) { e.aimRaw = !e.aimRaw; tick((x) => x + 1); } }} />
         <ToggleRow label="AI target-line overlay" value={!!e?.showAIDebug} disabled={!e} onChange={() => { if (e) { e.showAIDebug = !e.showAIDebug; tick((x) => x + 1); } }} />
@@ -340,7 +342,7 @@ function Readme() {
         <p>Kickoff/restart legality, goal-line test, taker selection, goal-kick penalties clear-out, possession attribution, throw-in repetition guard, half-time end swap, offside involvement, goalkeeper distribution, collision resolution, seeded decision variety and spatial marking/space awareness.</p>
       </Block>
       <Block t="Constraint">
-        <p>No offside exemptions for throw-ins, corners or goal kicks — those restarts are exempt by law. A player can be in an offside position at a restart but only penalised if involved after a teammate's pass from open play.</p>
+        <p>Throw-ins, corners, goal kicks and kickoffs are exempt from offside by law — no player can be penalised directly from those restarts. A player can stand in an offside position at a restart but is only penalised if involved after a teammate's pass from open play.</p>
       </Block>
     </div>
   );

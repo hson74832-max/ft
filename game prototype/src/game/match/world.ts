@@ -150,3 +150,36 @@ export function resizeRenderer(e: MatchHost) {
     e.renderer.setSize(w, h, false);
     e.camera.aspect = w / h; e.camera.updateProjectionMatrix();
   }
+
+/**
+ * Release every GPU resource owned by the scene graph: geometries, materials,
+ * their textures (pitch paint, shirt numbers, ball skin) and shadow maps.
+ * `renderer.dispose()` alone does none of this — it only drops the renderer's
+ * internal lists — so each abandoned match used to leak its whole scene on the
+ * GPU until the browser reclaimed the context. Shared assets are disposed once.
+ */
+export function disposeSceneGraph(scene: THREE.Scene) {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.geometry) geometries.add(mesh.geometry);
+    const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    for (const m of Array.isArray(material) ? material : material ? [material] : []) {
+      materials.add(m);
+      for (const value of Object.values(m)) {
+        if ((value as THREE.Texture | null)?.isTexture) textures.add(value as THREE.Texture);
+      }
+    }
+    const light = obj as THREE.DirectionalLight;
+    if (light.isDirectionalLight && light.shadow?.map) {
+      light.shadow.map.dispose();
+      light.shadow.map = null;
+    }
+  });
+  for (const texture of textures) texture.dispose();
+  for (const material of materials) material.dispose();
+  for (const geometry of geometries) geometry.dispose();
+  scene.clear();
+}

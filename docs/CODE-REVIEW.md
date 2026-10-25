@@ -391,3 +391,130 @@ Numeric literals (comments stripped): `engine 1120 (140 distinct)`, `anims 810 (
 `ai 577 (132)`, `tactics 235 (61)`.
 Duplication counts: offside test 4, lane formula 2, nearest-opponent 5, quaternion from-to 2,
 `clamp` 3 (tool), median helpers 4, `v()` 2, `isGif` 2, headless shim 6 (now 1).
+
+---
+
+## Bug audit — 2026-10-25 (follow-up to the structure review above)
+
+Full read-through of both projects hunting defects rather than structure: infinite
+loops, dead/unreachable code, races, leaks, logic holes, unsafe patterns, determinism,
+Three.js lifecycle, AI/restart/collision edge cases. Every lead was verified against
+call sites before fixing; the "not a bug" list below is as much the product as the fixes.
+
+### Fixed
+
+**Hangs & crashes**
+- `angles.wrapAngle` used subtraction loops: `wrapAngle(±Infinity)` never terminates,
+  huge finite inputs crawl. Now modulo + one adjust (identical results for all
+  terminating inputs; `-π` now maps to `+π` per the documented `(-π, π]` range).
+- `AnimationController.requestAction` threw `clip not found` inside the frame loop via
+  `getClip` — one bad action id would freeze the match (uncaught in rAF). It now
+  refuses unknown clips (`clipExists` gate, returns `false`).
+- `SeededRandom.weighted([])` fell through to `items[-1].value` (cryptic TypeError);
+  now throws a clear error. (All five call sites verified non-empty.)
+- `motion.ts` clip parser trusted JSON metadata: `contactFrame: NaN` passed the
+  `typeof === "number"` check (and JSON `1e999` → `Infinity`), `duration: 0/NaN`,
+  malformed `interruptible`/`speedBand`, non-string tags, non-finite `j`/`q`/`bindPose`
+  could all reach the controller and silently wedge it (NaN normalized time → contact
+  event never fires). All metadata numbers are now finite-checked/clamped at parse.
+- `rigBoneWorldDirection` walked skeleton parents unbounded (a cyclic contract would
+  spin forever) and crashed with a bare TypeError on unknown bones. Both guarded.
+- tool `processor.videoRun`: `Math.max(0.1, video.duration)` is NaN for containers
+  reporting `duration: NaN`, poisoning all range math. Finite-checked with fallback.
+
+**Leaks**
+- `MatchEngine.dispose()` called only `renderer.dispose()`, which frees none of the
+  scene's geometries/materials/textures — every match restart leaked the whole scene
+  on the GPU. New `disposeSceneGraph` (world.ts) traverses and disposes geometries,
+  materials, textures and shadow maps (deduped), then the renderer.
+- `ball.ts` `kickRangeTables` was an unbounded module-level cache keyed on the *live
+  ball height* (continuous): every distinct airborne height an AI think sampled built
+  (~100 simulated kicks) and kept a new table forever. Heights now bucket to 5 cm
+  (ground passes — ball exactly at radius height — keep bit-identical tables) and the
+  cache is hard-capped at 48 with oldest-first eviction (rebuilds are identical).
+- tool `App.runTracking`: a result with <2 frames threw without closing its decoded
+  GIF preview `ImageBitmap`s. Closed before the throw now (cancel path already did).
+
+**Logic holes**
+- `celebrateGoal` inferred the scorer from "the last rule event's team"; any event
+  landing after the goal during the GOAL phase (or a teamless whistle → default 0)
+  made the wrong team celebrate. Uses `rules.lastScorer`. This also shifted RNG
+  consumption (`startAction` draws a seed) — see determinism note.
+- `ai.readShot` judged "over the bar" using ball height at the *keeper's* line while
+  lateral aim was judged at the goal line; dipping lobs under the bar were never
+  attacked. Height is now also read at the goal line (keeper-line height still drives
+  the reach penalty).
+- `main.tsx` loaded the generated motion pack fire-and-forget: whether a match bound
+  generated or procedural clips (different durations/contact frames → different
+  gameplay) depended on fetch timing. Boot now awaits the (local, fast) load.
+- Menu `Enter` both activated a focused button *and* started a match, and could start
+  a match with a modal left open over it. Enter now ignores interactive targets and
+  open panels; `startMatch` clears the panel.
+- tool `gameclip` celebrate spec had `interruptible: [1.2, 1]` (from > to, > 1 —
+  malformed). Now `[1, 1]` (same effective behaviour); shipped pack regenerated
+  (frame data byte-identical, verified).
+- tool `SkeletonCanvas` perspective divisor `1 + z·p` hits 0 at max slider for a
+  joint 5 m behind the origin → Infinity/mirrored coords. Clamped.
+- Settings "Offside" toggle wrote 0/1 into the boolean `CONFIG.ai.offside` through a
+  numeric cast (snapshot then reported a number typed as `true`). Writes a real
+  boolean; snapshot coerces with `!!`.
+- Readme modal claimed both "no offside exemptions" and "exempt by law" in one
+  sentence. Rewritten to match `offside.ts` (throw-in/corner/goal-kick/kickoff exempt).
+- tool `SourceCanvas` `<video loop>` wrapped to t=0 (≠ clip start) flashing a wrong
+  frame until drift tolerance re-seeked. Removed; the timeline owns wrapping.
+
+**Dead / unreachable code**
+- `passing.planNamedReceiverPass` (+ its `PassPhysicsProfile`/`NamedPassPlan` types):
+  zero callers in src and scripts; `match/passPlanning.planNamedPass` is the live
+  implementation. Removed.
+- `restarts.placeForRestart`'s `selectTaker` kickoff branch: unreachable (kickoffs go
+  through `resetPositions`). Removed.
+- `SeededRandom.pick`: zero callers. Removed.
+- App's match-screen `PanelModal` branch: only reachable by pressing Enter with a
+  menu modal open — a bug, not a feature. Removed once `startMatch` clears the panel.
+- Duplicated doc comment over `stepBall`; stray trailing arg `resolveBallPlayerCollisions(e, )`.
+
+**Unsafe patterns**
+- Render-time ref writes (`pausedRef` in game App, `live.current` in both tool
+  canvases) moved into effects — a discarded concurrent render must not publish.
+- `engine={() => engineRef.current!}` lied about nullability on first paint.
+  `MatchScreen` engine is now `() => MatchEngine | null` with guarded call sites;
+  the AI-debug toggle label reads `snap.showAIDebug` instead of poking the live
+  engine during render (was also stale until the next snapshot tick).
+- `snapshot.buildSnapshot` selected-player fallback could still yield `undefined`
+  with an empty roster; added `?? e.players[0]` (defensive; unreachable today).
+
+### Investigated — deliberately NOT changed
+
+- `passPlanning.evaluateGkDistribution` vs the fallback inside `ai.goalkeeperDecision`:
+  both are live — the engine wires the former via `ai.gkDistribution`, standalone
+  `AIController` (headless suites) uses the latter. Duplication hazard, not a bug.
+- `validateFieldMotionAgainstSkeleton` fills missing bones while "validating":
+  documented normalization; the sampler is independently safe via `emptyPose()`.
+- `sampleFieldMotion` iterating frame A's bones only: parsed poses always cover the
+  contract, so frame B cannot have extras.
+- `ai.defensiveLineTarget` lane `roleIdx === 1 ? -1 : 1`: correct — `roleIdx` is the
+  formation index (DEFs are 1 and 2) and the only call site is DEF-gated.
+- Global clip registry surviving engine restarts: by design (Motion Lab import flow).
+- `processor` module clock never resetting: monotonic stamps are the requirement.
+- Settings panel mutating `CONFIG.ai`: intended live tuning (type hole above aside).
+- Per-think `THREE.Vector3` churn in ai/tactics: GC pressure only, throttled by
+  `nextThink`; rewriting risks behaviour drift for no correctness gain.
+- `poseStressTest` analytic clearances: matches its UI copy ("analytic"), not a fake.
+
+### Determinism
+
+Baseline vs after: `support-match` seed 1234 **1:5 · 69 passes · 21 shots** and seed
+777 **3:4 · 76 · 17** are bit-identical. Seed 42 moved **3:6 · 69 · 24 → 3:4 · 67 · 23**:
+the `celebrateGoal` fix — in that match the old heuristic celebrated with the wrong
+team at least once, drawing action seeds for different players. The suite's contract
+(same-seed replay `deepEqual` + quality invariants) passes; the old number embedded
+the bug, so the new one stands.
+
+### Verification
+
+`tsc --noEmit` clean in both projects; all 8 headless suites pass (selftest,
+support-regression 28/28, attacking-runs 8/8, tactics-test, kickoff-regression 7/7,
+motion-pipeline, support-match, ai-repro); `vite build` succeeds for both apps.
+Note: `tool/node_modules` is committed from a Windows install (`.cmd` shims, no Linux
+rollup binary) — the tool build only runs after a local `npm ci`; left untouched.

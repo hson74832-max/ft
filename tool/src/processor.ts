@@ -573,7 +573,11 @@ async function videoRun(file: File, range: Range, opts: TrackOptions, progress: 
     stage = 'loading the video';
     video = await loadVideo(url);
     if (!video.videoWidth || !video.videoHeight) throw new Error('This file has no decodable video track.');
-    const full = Math.max(0.1, video.duration);
+    // Some containers report NaN (no metadata) or Infinity (streamed) here;
+    // Math.max(0.1, NaN) is NaN, which would poison every range computation
+    // below and surface as a misleading "no player found". Fall back to the
+    // requested range end.
+    const full = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Math.max(0.1, range.end);
     const start = clamp(range.start, 0, Math.max(0, full - 0.05));
     const end = clamp(range.end > start ? range.end : full, start + 0.05, full);
     // Clamp the WINDOW, not the sample count, so the requested FPS is always honoured.
