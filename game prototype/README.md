@@ -130,7 +130,26 @@ src/game/
   passing.ts     same-team receiver checks and acceleration-aware reception prediction
   random.ts      match PRNG + stable tie-break hashes
   restartRules.ts pure kickoff legality checks (regression-tested)
-  engine.ts      world, input, collisions, restarts, cameras, snapshot
+  engine.ts      MatchEngine: all match state + the public API; `step` orchestrates one frame
+  match/         the engine's concerns, one module per job — each takes the engine as `MatchHost`
+    world.ts        renderer, stadium, player meshes, AI debug overlay
+    roster.ts       squad creation, human-controlled slot
+    input.ts        keyboard bindings (attach/detach, mode keys)
+    camera.ts       broadcast / follow / free-debug rigs
+    frame.ts        one frame: AI world view, player integration, ball truth, celebrations
+    control.ts      human pad, and applying an AI decision to a player
+    actions.ts      action dispatch: clip request, kick intent, action seeds
+    passPlanning.ts lane clearance, kick profiles, named-receiver plans, keeper distribution
+    offside.ts      offside capture, flagging, the at-kick check
+    restarts.ts     restart staging, taker selection, delivery sampling, watchdog
+    contacts.ts     the contact frame: what the ball does when an action lands
+    possession.ts   possession clock, reception triggers, out-of-play detection
+    collisions.ts   player/ball body collisions
+    snapshot.ts     HUD DTO (`Snapshot`)
+    debug.ts        ?debug=ai event log and decision table
+    host.ts         `MatchHost` — the state those modules read and write
+    types.ts        `EnginePlayer`, traces, `PassPlan`
+    scratch.ts      shared per-call scratch vectors
 src/ui/          Rush Arena menu, scorebug, HUD, data drawer, panels
   gameclip.ts (in tool/)       generated clip specs: FK from joint angles + slot metadata
 scripts/selftest.ts            headless checks: rules, RNG, FieldMotion, physics, AI awareness
