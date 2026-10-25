@@ -103,7 +103,36 @@ export const CONFIG = {
     gkCatchSpeed: 16,          // m/s — above this a clean contact becomes a parry
     gkSetShuffleSpeed: 2.0,    // m/s — lateral side-step while set for a shot
     gkOffBalancePenalty: 0.3,  // m of dive reach lost per m/s of lateral speed at contact
+    // Angle/near-post positioning. `gkRushLine` is a hard safety bound; the
+    // keeper normally occupies an arc closer to the goal line and only advances
+    // into it when the ball is close enough to narrow the shooting angle.
+    gkPositionBase: 0.72,      // m off the goal line at zero range
+    gkPositionDepthFactor: 0.11, // m of advance per metre of ball distance
+    gkPositionMaxAdvance: 4.2, // m — never vacate the six-yard area while tracking
+    gkRushBonus: 1.3,          // extra advance against a close, central threat
+    gkNearPostBias: 0.28,      // m — protect the near post on wide balls
+    gkNearPostInset: 0.18,     // m — do not stand outside the post
     passAimConeDegrees: 8,
+  },
+  /**
+   * Deterministic tackle duel. There is deliberately no random draw here: a
+   * challenge is resolved from angle, timing, balance, ball access and the
+   * carrier's protection window. `score` is a quality in 0..1, not a dice roll.
+   */
+  tackle: {
+    standReach: 1.15, slideReach: 1.55,
+    standBodyReach: 1.9, slideBodyReach: 2.45,
+    standRecovery: 0.85, slideRecovery: 1.55,
+    standCooldown: 1.35, slideCooldown: 1.85,
+    possessionProtection: 0.8,  // s — a clean winner cannot be re-tackled instantly
+    cleanScore: 0.62,          // quality needed to take possession cleanly
+    spillScore: 0.42,          // lower quality knocks the ball loose instead
+    foulScore: 0.18,           // below this, heavy contact is a foul
+    lateContactPenalty: 0.35,  // quality lost when the contact frame arrives late
+    staleTargetPenalty: 0.4,   // quality lost when the intended carrier changed
+    slideControlPenalty: 0.1,  // slides have more reach but a narrower clean window
+    spillSpeed: 5.5, spillDistance: 1.0,
+    missStumble: 0.32, foulStumble: 0.8,
   },
   tactics: {
     planInterval: 0.4,
@@ -342,7 +371,7 @@ export const FORMATIONS: Record<string, { role: string; home: [number, number] }
 
 export type RuleEventType =
   | "KICKOFF" | "WHISTLE" | "GOAL" | "THROW_IN" | "CORNER" | "GOAL_KICK"
-  | "FREE_KICK" | "PENALTY" | "FOUL" | "POSSESSION" | "SAVE" | "HALF_TIME"
+  | "FREE_KICK" | "PENALTY" | "FOUL" | "TACKLE" | "POSSESSION" | "SAVE" | "HALF_TIME"
   | "FULL_TIME" | "CELEBRATION_END" | "RESTART_READY" | "OFFSIDE";
 
 export interface RuleEvent { id: number; t: number; type: RuleEventType; detail: string; team?: number; }

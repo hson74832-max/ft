@@ -14,7 +14,8 @@ export function updateCamera(e: MatchHost, dt: number) {
     e.camera.position.copy(e.camPos);
     e.camera.lookAt(e.camLook);
   } else if (e.cameraMode === "follow") {
-    const h = e.players[e.humanIdx];
+    const h = e.players[e.humanIdx] ?? e.players[e.selectedIdx] ?? e.players[0];
+    if (!h) return;
     const bx = h.pos.x - Math.cos(h.facing) * 7, bz = h.pos.z + Math.sin(h.facing) * 7;
     _v1.set(bx, 5.2, bz);
     e.camPos.lerp(_v1, Math.min(1, dt * 3.5));

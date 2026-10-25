@@ -133,7 +133,10 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer): GkDistri
   const mates = e.players.filter((p) => p.team === gk.team && p.idx !== gk.idx && p.role !== "GK");
   if (!mates.length) return null;
   const opponents = e.players.filter((p) => p.team !== gk.team);
-  const pressure = Math.min(...opponents.map((o) => o.pos.distanceTo(gk.pos)));
+  // `Math.min(...[])` is Infinity; treat a one-team/custom roster as unpressured.
+  const pressure = opponents.length
+    ? Math.min(...opponents.map((o) => o.pos.distanceTo(gk.pos)))
+    : 20;
   const origin = e.ball.pos.clone();
   const sign = e.ai.attackSign(gk.team, e.rules.half);
   const options = mates.map((m) => {
@@ -162,7 +165,8 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer): GkDistri
   // otherwise go long to the free receiver. Pressured keepers still look long first.
   const useShort = !!bestShort && (pressure < 4.2 || (bestShort.lane > 0.5 && bestShort.space > 3.2))
     && bestShort.score >= (longOpts[0]?.score ?? -1) - 0.05;
-  const chosen = useShort ? bestShort! : (longOpts[0] ?? bestShort!);
+  const chosen = (useShort ? bestShort : undefined) ?? longOpts[0] ?? bestShort;
+  if (!chosen) return null;
   return {
     action: e.ball.handsRestrictedTeam === gk.team
       ? chosen.short ? "pass_short" : "pass_long"

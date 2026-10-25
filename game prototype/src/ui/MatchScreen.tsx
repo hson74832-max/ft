@@ -92,7 +92,7 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
       {/* control hints */}
       <div className="absolute bottom-3 left-4 z-10 hidden max-w-[430px] items-center gap-3 rounded-md border border-white/10 bg-black/55 px-3 py-2 text-[10px] text-zinc-300 backdrop-blur md:flex">
         <span className="font-bold text-white">#{snap?.humanIdx ?? 4} RED {snap?.humanRole ?? "FWD"}</span>
-        <Key k="WASD" d="move" /><Key k="SHIFT" d="sprint" /><Key k="SPACE" d="pass" /><Key k="E" d="shoot" /><Key k="Q" d="through" /><Key k="F" d="tackle" /><Key k="X" d="switch" />
+        <Key k="WASD" d="move" /><Key k="SHIFT" d="sprint" /><Key k="SPACE" d="pass" /><Key k="E" d="shoot" /><Key k="Q" d="through" /><Key k="F" d="tackle" /><Key k="X" d="switch" /><Key k="H" d="anim panel" />
       </div>
 
       {/* charge + player chip */}
@@ -182,7 +182,7 @@ function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => 
         <button onClick={onClose} className="rounded border border-white/10 p-1 text-zinc-400 hover:text-white"><X className="h-3.5 w-3.5" /></button>
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-[11px]">
-        <section className="rounded-md border border-white/10 bg-white/[0.03] p-2 font-mono">
+        {snap.showAnimOverlay && <section className="rounded-md border border-white/10 bg-white/[0.03] p-2 font-mono">
           <Label>Animation · player #{snap.selIdx} {snap.selRole}</Label>
           <Row k="state" v={snap.anim.state} /><Row k="clip" v={snap.anim.clip} />
           <div className="my-1 h-1 overflow-hidden rounded bg-white/10"><div className="h-full bg-[#c8f31d]" style={{ width: `${snap.anim.nt * 100}%` }} /></div>
@@ -190,9 +190,10 @@ function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => 
           <Row k="speed" v={`${snap.anim.speed.toFixed(2)} m/s`} /><Row k="weights" v={snap.anim.weights} />
           <Row k="contact" v={snap.anim.contactFired ? "ball_contact ✓" : "—"} />
           <Row k="match seed" v={String(snap.matchSeed)} />
-          <Row k="action seed" v={String(snap.lastActionSeed ?? "—")} />
+          <Row k="action seed" v={snap.lastActionSeed === null ? "—" : `0x${snap.lastActionSeed.toString(16)}`} />
+          <Row k="motion" v={snap.motionChanged ? `changed since kickoff (rev ${snap.motionRevision})` : `rev ${snap.motionRevision}`} />
           <Row k="restart" v={snap.restartKind ? `${snap.restartKind} · T${snap.restartTeam}` : "open play"} />
-        </section>
+        </section>}
         <section>
           <Label>Action seed log</Label>
           <div className="max-h-24 overflow-y-auto rounded border border-white/10 bg-black/40 p-1 font-mono text-[9px] text-zinc-400">
@@ -224,6 +225,7 @@ function DebugDrawer({ snap, engine, onClose }: { snap: Snapshot; engine: () => 
           <div className="mb-2 border-b border-white/10 pb-2 text-[10px] text-zinc-400">
             Delivered: {snap.tacticalStats.recycles} resets / {snap.tacticalStats.keeperRecycles} to GK / {snap.tacticalStats.penetratingPasses} penetrating
             <div className="text-zinc-500">Shots {snap.tacticalStats.shots} · GK foot controls {snap.tacticalStats.keeperFootControls}</div>
+            <div className="text-zinc-500">Tackles {snap.tacticalStats.tacklesAttempted} · won {snap.tacticalStats.tacklesWon} · spilled {snap.tacticalStats.tacklesSpilled} · missed {snap.tacticalStats.tacklesMissed} · fouls {snap.tacticalStats.fouls}</div>
           </div>
           {snap.decisions.map((d) => (
             <div key={d.idx} className="mb-1 rounded border border-white/10 bg-white/[0.03] px-2 py-1">

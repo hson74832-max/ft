@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { CONFIG, FORMATIONS } from "./config";
 import { clipExists } from "./anims";
-import { SeededRandom, tieBreakHash } from "./random";
+import { SeededRandom, streamSeed, tieBreakHash } from "./random";
 import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, spaceAhead, type RunType, type SupportJob } from "./tactics";
 
 export interface PlayerStyle {
@@ -29,6 +29,9 @@ export interface WorldPlayer {
   moveTarget?: THREE.Vector3;
   desiredSpeed?: number;
   pendingPassTo?: number;
+  /** Duel state from the engine player (optional for standalone AI fixtures). */
+  tackleRecoveryT?: number;
+  tackleProtectionT?: number;
 }
 
 export interface PassFlight {
@@ -57,7 +60,6 @@ export interface AIDecision {
   action: string | null;
   actionTarget?: THREE.Vector3;
   passTo?: number;
-  actionSeed?: number;
   noveltyKey?: string;
   reason: string;
   utilities: Record<string, number>;
@@ -72,6 +74,45 @@ export interface AIDecision {
 
 export interface BallSample { t: number; pos: THREE.Vector3; }
 
+export interface KeeperPosition {
+  target: THREE.Vector3;
+  advance: number;  // metres in front of the goal line
+  lateral: number;  // goal-centred z
+  angle: number;    // radians between the goal-line normal and the ball
+}
+
+/**
+ * Realistic angle positioning: the keeper stands on the line between the ball
+ * and the middle of the goal, on a shallow arc whose radius grows with range,
+ * biased toward the near post. The old `clamp(x, -19.4, 19.4)` accidentally
+ * limited BOTH keepers to 0.6 m off the goal line, leaving the whole shooting
+ * angle open. This helper is pure so it can be regression-tested without a GPU.
+ */
+export function keeperPositionTarget(ball: THREE.Vector3, ownGoal: THREE.Vector3, fieldSign: number): KeeperPosition {
+  const A = CONFIG.ai;
+  const halfL = CONFIG.pitch.length / 2;
+  const goalHalf = CONFIG.pitch.goalWidth / 2;
+  const depth = Math.max(0.25, (ball.x - ownGoal.x) * fieldSign);
+  const lateral = ball.z;
+  const range = Math.max(0.25, Math.hypot(depth, lateral));
+  const dirX = depth / range, dirZ = lateral / range;
+  const angle = Math.atan2(Math.abs(lateral), depth);
+  const maxAdvance = Math.min(A.gkRushLine, A.gkPositionMaxAdvance);
+  const base = THREE.MathUtils.clamp(A.gkPositionBase + range * A.gkPositionDepthFactor, A.gkPositionBase, maxAdvance);
+  // Come further off the line against a close central threat to narrow the angle.
+  const rush = THREE.MathUtils.clamp((12 - depth) / 10, 0, 1) * A.gkRushBonus;
+  const radius = THREE.MathUtils.clamp(base + rush, A.gkPositionBase, maxAdvance);
+  const advance = THREE.MathUtils.clamp(dirX * radius, A.gkPositionBase, maxAdvance);
+  const nearBias = Math.sign(lateral) * A.gkNearPostBias
+    * THREE.MathUtils.clamp(Math.abs(lateral) / 8, 0, 1);
+  const keeperZ = THREE.MathUtils.clamp(dirZ * radius + nearBias,
+    -goalHalf + A.gkNearPostInset, goalHalf - A.gkNearPostInset);
+  // Clamp in world coordinates, not to one side of the pitch: the sign above
+  // already keeps the keeper in front of the correct goal in either half.
+  const keeperX = THREE.MathUtils.clamp(ownGoal.x + fieldSign * advance, -halfL + 0.3, halfL - 0.3);
+  return { target: new THREE.Vector3(keeperX, 0, keeperZ), advance, lateral: keeperZ, angle };
+}
+
 export class AIController {
   nextThink = new Map<number, number>();
   lastDecision = new Map<number, AIDecision>();
@@ -84,6 +125,27 @@ export class AIController {
   /** Engine-provided distribution evaluator (space + lane + pressure), not a distance rule. */
   gkDistribution: ((gkIdx: number) => { action: string; receiverIdx: number; target: THREE.Vector3; reason: string } | null) | null = null;
   private gkRead = new Map<number, { age: number; err: number; timing: number }>();
+  /** One decision stream per player: a human/spectator branch cannot shift teammates' noise. */
+  private playerStreams = new Map<number, SeededRandom>();
+
+  private streamFor(idx: number): SeededRandom {
+    let stream = this.playerStreams.get(idx);
+    if (!stream) {
+      stream = new SeededRandom(streamSeed(this.matchSeed, `ai-player:${idx}`));
+      this.playerStreams.set(idx, stream);
+    }
+    return stream;
+  }
+
+  /** Clear per-match decision memory and restore derived streams for a re-stage. */
+  resetDecisions(): void {
+    this.nextThink.clear();
+    this.lastDecision.clear();
+    this.recentChoices.clear();
+    this.decisionContext.clear();
+    this.playerStreams.clear();
+    this.gkRead.clear();
+  }
 
   private pointNearSegment(pt: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, radius: number): boolean {
     const ab = new THREE.Vector3(b.x - a.x, 0, b.z - a.z);
@@ -131,11 +193,14 @@ export class AIController {
     const context = `${snap.half}:${snap.ballOwner}:${snap.passFlight?.launchedAt ?? -1}`;
     if (!shotInbound && now < gate && this.decisionContext.get(p.idx) === context && this.lastDecision.has(p.idx)) return this.lastDecision.get(p.idx)!;
     this.decisionContext.set(p.idx, context);
-    // Real AI decision delay: outfield 0.28 s, goalkeeper 0.35 s.
+    // Real AI decision delay: outfield 0.28 s, goalkeeper 0.35 s. Use a
+    // per-player stream so skipping one player's think (human/spectator mode)
+    // cannot shift the random sequence of every other player.
+    const rng = this.streamFor(p.idx);
     const baseDelay = p.role === "GK" ? CONFIG.ai.gkDecisionDelay : CONFIG.ai.reactionDelay;
-    this.nextThink.set(p.idx, now + baseDelay * this.rng.range(0.72, 1.3));
+    this.nextThink.set(p.idx, now + baseDelay * rng.range(0.72, 1.3));
 
-    const noise = (scale = 1) => this.rng.range(-1, 1) * CONFIG.ai.decisionNoise * scale;
+    const noise = (scale = 1) => rng.range(-1, 1) * CONFIG.ai.decisionNoise * scale;
     const d = (a: THREE.Vector3, b: THREE.Vector3) => a.distanceTo(b);
     const mates = snap.players.filter((q) => q.team === p.team && q.idx !== p.idx);
     const atkSign = this.attackSign(p.team, snap.half);
@@ -150,7 +215,7 @@ export class AIController {
     const jitter = (key: string) => tieBreakHash(this.matchSeed, p.idx, p.runSerial, key) * 0.018;
 
     if (p.role === "GK") {
-      const gk = this.goalkeeperDecision(p, mates, snap, now, ownGoal, atkGoal, noise);
+      const gk = this.goalkeeperDecision(p, mates, snap, now, ownGoal, atkGoal, noise, rng);
       return this.store(p.idx, gk);
     }
 
@@ -239,8 +304,8 @@ export class AIController {
       block.z += isClosest ? 0 : (p.roleIdx === 1 ? -1.5 : 1.5);
       block.x = THREE.MathUtils.clamp(block.x, -18.6, 18.6);
       const distance = d(p.pos, carrier.pos);
-      const action = isClosest && distance < 1.55 && this.can(p, "tackle_stand") ? "tackle_stand"
-        : isClosest && distance < 2.5 && this.can(p, "tackle_slide") && p.style.risk > 1.12 ? "tackle_slide" : null;
+      const action = isClosest && distance < 1.55 && this.canTackle(p, snap, "tackle_stand") ? "tackle_stand"
+        : isClosest && distance < 2.5 && p.style.risk > 1.12 && this.canTackle(p, snap, "tackle_slide") ? "tackle_slide" : null;
       return this.store(p.idx, {
         moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: `step:${Math.round(carrierLocal / 4)}:${isClosest ? 1 : 0}`,
@@ -254,8 +319,8 @@ export class AIController {
     if (p.idx === presser?.idx) {
       const dist = d(p.pos, carrier.pos);
       let action: string | null = null;
-      if (dist < 1.5 && this.can(p, "tackle_stand")) action = "tackle_stand";
-      else if (dist < 2.55 && dist > 1.4 && p.style.risk > 1.02 && this.can(p, "tackle_slide")) action = "tackle_slide";
+      if (dist < 1.5 && this.canTackle(p, snap, "tackle_stand")) action = "tackle_stand";
+      else if (dist < 2.55 && dist > 1.4 && p.style.risk > 1.02 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
       return this.store(p.idx, {
         moveTarget: carrier.pos.clone(), desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: "press-carrier",
@@ -491,6 +556,7 @@ export class AIController {
   private goalkeeperDecision(
     p: WorldPlayer, mates: WorldPlayer[], snap: WorldSnap, _now: number,
     ownGoal: THREE.Vector3, atkGoal: THREE.Vector3, noise: (scale?: number) => number,
+    rng: SeededRandom,
   ): AIDecision {
     if (!p.hasBall && snap.passFlight?.receiver === p.idx && snap.ballOwner === null) {
       return { moveTarget: snap.passFlight.target.clone(), desiredSpeed: CONFIG.player.runSpeed, action: null,
@@ -549,16 +615,17 @@ export class AIController {
         const screened = snap.players.some((q) => q.idx !== p.idx && q.role !== "GK"
           && this.pointNearSegment(q.pos, snap.ballPos, new THREE.Vector3(p.pos.x, 0, shot.z), 0.7));
         const difficulty = (ballSpeed / 20) * (screened ? 1.7 : 1);
-        const err = this.rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty;
+        const err = rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty;
         // Dive timing error: negative = early, positive = late. Skewed late against pace.
-        const timing = this.rng.range(-0.5, 1) * CONFIG.ai.gkTimingError * difficulty;
+        const timing = rng.range(-0.5, 1) * CONFIG.ai.gkTimingError * difficulty;
         this.gkRead.set(p.idx, { age, err, timing });
       } else prev.age = age;
       shot.z += this.gkRead.get(p.idx)!.err;
       shot.timeLeft += this.gkRead.get(p.idx)!.timing; // late reader perceives more time → commits late
       shot.lateral = Math.abs(shot.z - p.pos.z);
       shot.reachable = shot.lateral <= shot.reach;
-      const keeperTarget = new THREE.Vector3(p.pos.x, 0, THREE.MathUtils.clamp(shot.z, -1.6, 1.6));
+      const goalHalf = CONFIG.pitch.goalWidth / 2 - CONFIG.ai.gkNearPostInset;
+      const keeperTarget = new THREE.Vector3(p.pos.x, 0, THREE.MathUtils.clamp(shot.z, -goalHalf, goalHalf));
       const util = { save: shot.reachable ? 1 : 0, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach };
       if (snap.ballKickAge !== undefined && snap.ballKickAge < CONFIG.ai.gkReactionTime) {
         // Human reaction time: the keeper has not processed the strike yet.
@@ -610,14 +677,11 @@ export class AIController {
       }
     }
 
-    // Hold the near-post angle, but step off the line to claim a reachable loose ball.
-    const goalToBall = ball.clone().sub(ownGoal).setY(0);
-    const dist = goalToBall.length();
-    const direction = goalToBall.normalize();
-    const xStep = THREE.MathUtils.clamp(dist * 0.1, 0.35, CONFIG.ai.gkRushLine);
-    const line = ownGoal.clone().addScaledVector(direction, xStep);
-    line.x = THREE.MathUtils.clamp(line.x, -19.4, 19.4);
-    line.z = THREE.MathUtils.clamp(ball.z * 0.55, -1.35, 1.35); // cover the near post when the ball is wide
+    // Track the ball on a real angle arc: off the line, on the ball→goal-centre
+    // ray and biased to the near post. A world-space clamp previously pinned the
+    // keeper 0.6 m from the line, which made close-range scoring trivial.
+    const dist = Math.hypot(ball.x - ownGoal.x, ball.z - ownGoal.z);
+    const position = keeperPositionTarget(ball, ownGoal, atkSign);
     if (ballSpeed < 8.5 && dist < 5.0 && ball.y < 1.35 && snap.ballOwnerTeam !== p.team) {
       return {
         moveTarget: ball.clone().setY(0), desiredSpeed: Math.min(CONFIG.ai.maxSprint, 5.2),
@@ -625,7 +689,16 @@ export class AIController {
         actionTarget: ball.clone(), reason: "GK claim loose ball", utilities: { claim: 0.9 }, urgent: true,
       };
     }
-    return { moveTarget: line, desiredSpeed: 2.5, action: null, reason: "GK angle · track ball and narrow goal", utilities: { angle: 1 }, urgent: false };
+    const recoverSpeed = THREE.MathUtils.clamp(
+      d2(p.pos, position.target) * 2.2 + (ballSpeed > 12 ? 1.2 : 0),
+      2.2, Math.min(CONFIG.player.gkSprintSpeed, 5.8),
+    );
+    return {
+      moveTarget: position.target, desiredSpeed: recoverSpeed, action: null,
+      reason: `GK angle · ${position.advance.toFixed(1)}m out · z ${position.lateral.toFixed(2)} · ${(position.angle * 180 / Math.PI).toFixed(0)}deg`,
+      utilities: { angle: 1, advance: position.advance, nearPost: Math.abs(position.lateral) },
+      urgent: dist < 14,
+    };
   }
 
   private chooseShotAim(
@@ -854,7 +927,9 @@ export class AIController {
     const u = position.x * sign;
     if (u <= 0) return false; // own half is onside
     const defenders = snap.players.filter((p) => p.team !== team).map((p) => p.pos.x * sign).sort((a, b) => b - a);
-    const secondLast = defenders.length >= 2 ? defenders[1] : -CONFIG.pitch.length / 2;
+    // Fewer than two defenders means there is no second-last defender; put the
+    // line beyond the pitch so no attacker can be offside (matches offside.ts).
+    const secondLast = defenders.length >= 2 ? defenders[1] : CONFIG.pitch.length / 2;
     return u > ball.x * sign + CONFIG.ai.offsideBuffer && u > secondLast + CONFIG.ai.offsideBuffer;
   }
 
@@ -890,7 +965,31 @@ export class AIController {
   private can(p: WorldPlayer, clip: string): boolean {
     if (!clipExists(clip)) return false;
     if ((p.cooldowns.get(clip) ?? 0) > 0) return false;
+    if ((clip === "tackle_stand" || clip === "tackle_slide") && (p.tackleRecoveryT ?? 0) > 0) return false;
     return !p.busy && !p.uninterruptible;
+  }
+
+  /**
+   * A defender only commits to a challenge when the ball can actually be won:
+   * no protected carrier, a forward-facing approach and not from the blind side.
+   * Contact still re-evaluates quality; this avoids AI spamming doomed slides.
+   */
+  private canTackle(p: WorldPlayer, snap: WorldSnap, clip: "tackle_stand" | "tackle_slide"): boolean {
+    if (!this.can(p, clip)) return false;
+    const carrier = snap.players.find((q) => q.idx === snap.ballOwner);
+    if (!carrier || carrier.team === p.team || (carrier.tackleProtectionT ?? 0) > 0) return false;
+    const dx = snap.ballPos.x - p.pos.x, dz = snap.ballPos.z - p.pos.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.01) return false;
+    const facingDot = (Math.cos(p.facing) * dx - Math.sin(p.facing) * dz) / len;
+    if (facingDot < 0.12) return false;
+    const cdx = p.pos.x - carrier.pos.x, cdz = p.pos.z - carrier.pos.z;
+    const clen = Math.hypot(cdx, cdz);
+    const frontDot = clen > 0.01
+      ? (Math.cos(carrier.facing) * cdx - Math.sin(carrier.facing) * cdz) / clen
+      : 0;
+    // A slide from behind is both unrealistic and heavily penalised at contact.
+    return !(clip === "tackle_slide" && frontDot < -0.35);
   }
 
   commitDecision(idx: number, decision: AIDecision) {
@@ -903,7 +1002,9 @@ export class AIController {
   }
 
   private store(idx: number, decision: AIDecision): AIDecision {
-    if (decision.action) decision.actionSeed = this.rng.nextUint();
+    // Action ids are derived from match state, not drawn here. A decision that
+    // is cached, rejected on cooldown or cancelled at its contact frame must
+    // consume exactly zero PRNG values.
     this.lastDecision.set(idx, decision);
     return decision;
   }

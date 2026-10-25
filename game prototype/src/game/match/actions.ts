@@ -1,16 +1,45 @@
-// Action dispatch: request the clip, stamp the seeded action seed, record the
-// pending kick intent that the contact frame later resolves.
+// Action dispatch: request the clip, stamp a deterministic action seed, record
+// the pending kick intent that the contact frame later resolves.
 import * as THREE from "three";
 import { CONFIG } from "../config";
+import { tieBreakHash } from "../random";
+import { beginTackle, carrierIsProtected, isTackleAction } from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
+/**
+ * A stable, collision-resistant-enough action id for replay logs.
+ *
+ * It is derived from immutable match/player/action/time facts. Drawing it from
+ * the shared match PRNG made human actions, cancelled passes, retries and AI
+ * decisions shift every later random draw. An explicitly supplied seed (used by
+ * restart attempts) is still honoured.
+ */
+export function deterministicActionSeed(e: MatchHost, p: EnginePlayer, action: string): number {
+  const frame = Math.round(e.clock * 10000);
+  const key = `${action}:${frame}:${p.runSerial}:${e.lastActionSeed ?? 0}:${e.ball.possessedBy ?? -1}`;
+  return Math.floor(tieBreakHash(e.matchSeed, p.idx, frame, key) * 0x100000000) >>> 0;
+}
+
 /** Request an action clip and record the kick intent its contact frame will resolve. */
-export function startAction(e: MatchHost, p: EnginePlayer, action: string, target?: THREE.Vector3, passTo?: number, actionSeed?: number, power?: number): boolean {
+export function startAction(
+  e: MatchHost,
+  p: EnginePlayer,
+  action: string,
+  target?: THREE.Vector3,
+  passTo?: number,
+  actionSeed?: number,
+  power?: number,
+): boolean {
+  // A challenge against a recently-won ball is rejected before the wind-up:
+  // otherwise B can start a tackle during A's protection and simply wait for
+  // the shield to expire before the contact frame.
+  if (isTackleAction(action) && (p.tackleRecoveryT > 0 || carrierIsProtected(e))) return false;
   if (!p.anim.requestAction(action)) return false;
-  const seed = actionSeed ?? e.rng.nextUint();
-  p.lastActionSeed = seed;
-  p.pendingKick = target ? { action, target: target.clone(), passTo, actionSeed: seed, power } : null;
+
+  if (isTackleAction(action)) beginTackle(e, p, action);
+  const seed = actionSeed ?? deterministicActionSeed(e, p, action);
+  p.pendingKick = target ? { action, target: target.clone(), passTo, power } : null;
   e.lastActionSeed = seed;
   e.actionLog.push({ seed, t: e.clock, player: p.idx, action, target: target ? [target.x, target.y, target.z] : undefined });
   if (e.actionLog.length > 80) e.actionLog.shift();

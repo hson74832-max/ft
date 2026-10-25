@@ -10,6 +10,10 @@ import { captureOffsideAtKick, flagOffside } from "./offside";
 import { planNamedPass, recordPass } from "./passPlanning";
 import { setHumanPlayer } from "./roster";
 import { releaseRestartToTaker } from "./restarts";
+import {
+  evaluateTackle, isTackleAction, spillDirection, tackleReach, tackleRecovery,
+  type TackleOutcome,
+} from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -23,9 +27,19 @@ function releaseToKick(e: MatchHost, p: EnginePlayer) {
 /** World position of the limb the action strikes with (foot / head / hand). */
 export function footWorld(p: EnginePlayer, which = "R"): THREE.Vector3 {
   const b = p.rig.skeleton.bones.get(which === "head" ? "head" : which === "hands" ? "hand.R" : `foot.${which}`);
-  const v = new THREE.Vector3();
-  if (b) b.getWorldPosition(v);
-  return v;
+  if (b) {
+    const v = new THREE.Vector3();
+    b.getWorldPosition(v);
+    return v;
+  }
+  // A missing bone must not turn every contact into a false alignment at (0,0,0).
+  // Fall back to the player's own striking point in world space.
+  const fx = Math.cos(p.facing), fz = -Math.sin(p.facing);
+  return new THREE.Vector3(
+    p.pos.x + fx * 0.45,
+    which === "head" ? 1.65 : which === "hands" ? 1.15 : 0.12,
+    p.pos.z + fz * 0.45,
+  );
 }
 
 /** Resolve an action's contact frame against the ball, then close the restart out. */
@@ -33,6 +47,8 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
   const pk = p.pendingKick;
   const activeRestart = e.rules.pendingRestart;
   let ballReleasedByAction = false;
+  let tackleOutcome: TackleOutcome | null = null;
+  let tackleDetail = "";
   e.contactTotal++;
   const foot = footWorld(p, action === "header" ? "head" : action === "throw_in" || action.startsWith("gk_") ? "hands" : "R");
   const dist = foot.distanceTo(e.ball.pos);
@@ -102,57 +118,89 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       break;
     }
     case "tackle_stand": case "tackle_slide": {
+      if (!isTackleAction(action)) break;
       const carrierIdx = e.ball.possessedBy;
       const carrier = carrierIdx !== null ? e.players[carrierIdx] : null;
-      // A tackle wins the BALL, not the man: success requires the ball (glued ~0.48 m in
-      // front of the carrier) inside the tackler's foot reach at the contact frame.
-      // Lunge root motion has already closed ~1 m by contact. Tackling from behind or the
-      // blind side reaches the carrier's body but not the ball → contact, no win.
-      const footReach = action === "tackle_slide" ? 1.55 : 1.15;
-      const maxReach = CONFIG.player.tackleRadius + (action === "tackle_slide" ? 0.9 : 0.75);
-      const ballDist = Math.hypot(e.ball.pos.x - p.pos.x, e.ball.pos.z - p.pos.z);
-      const villainClose = !!carrier && carrier.team !== p.team && ballDist < footReach;
-      // Direction from tackler to ball vs tackler's facing: a tackler facing away from
-      // the ball (from behind/blind side) cannot lawfully reach the ball first.
-      const toBallX = e.ball.pos.x - p.pos.x, toBallZ = e.ball.pos.z - p.pos.z;
-      const toBallLen = Math.hypot(toBallX, toBallZ);
-      const toBallNx = toBallLen > 1e-4 ? toBallX / toBallLen : 0;
-      const toBallNz = toBallLen > 1e-4 ? toBallZ / toBallLen : 0;
-      const facingDot = Math.sin(p.facing) * toBallNx + Math.cos(p.facing) * toBallNz;
-      const facingAway = facingDot < -0.3; // more than ~107° off facing the ball
-      const ballClose = ballDist < footReach + 0.2;
-      if (carrier && villainClose && !facingAway) {
-        // Clean tackle win: tackler claims the ball and stumbles the carrier
+      const quality = evaluateTackle(e, p, action);
+      const stats = e.tacticalStats;
+      stats.tacklesAttempted++;
+      tackleDetail = quality.reason;
+      // Recovery is paid for the attempt. A foul costs extra, and a slide that
+      // misses still has to get up before it can challenge again.
+      p.tackleRecoveryT = Math.max(p.tackleRecoveryT,
+        tackleRecovery(action) + (quality.outcome === "foul" ? 0.45 : 0));
+
+      if (carrierIdx === null && quality.ballDist < tackleReach(action)
+        && quality.score >= CONFIG.tackle.spillScore) {
+        // Loose-ball challenge: a high-quality poke may still claim it, but a
+        // poor challenge never turns into free possession.
         e.ball.possess(p.idx, p.team);
         e.ball.vel.set(0, 0, 0);
+        p.tackleProtectionT = CONFIG.tackle.possessionProtection;
         e.offsideCandidates.clear(); e.offsideTeam = null;
+        tackleOutcome = "clean";
+        stats.tacklesWon++;
+        e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} claims loose ball (${action})`, p.team);
+        e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} claims loose ball (${action})`, p.team);
+        if (p.team === e.humanTeam && !e.spectator) setHumanPlayer(e, p);
+      } else if (quality.outcome === "clean" && carrier) {
+        // Ball-first, front/side-on and on time: take possession, then protect
+        // it briefly so the dispossessed player cannot instantly win it back.
+        e.ball.possess(p.idx, p.team);
+        e.ball.vel.set(0, 0, 0);
+        p.tackleProtectionT = CONFIG.tackle.possessionProtection;
+        e.offsideCandidates.clear(); e.offsideTeam = null;
+        tackleOutcome = "clean";
+        stats.tacklesWon++;
+        e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} wins tackle (${action}) · q ${quality.score.toFixed(2)}`, p.team);
         e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} wins tackle (${action})`, p.team);
         carrier.stumbleT = 0.75;
         startAction(e, carrier, "stumble");
         if (p.team === e.humanTeam && !e.spectator) setHumanPlayer(e, p);
-      } else if (carrier && carrier.team !== p.team && carrier.pos.distanceTo(p.pos) < maxReach + 0.45) {
-        // Heavy contact with no ball access
-        carrier.stumbleT = 0.8;
+      } else if (quality.outcome === "spill" && carrier) {
+        // A half-won challenge knocks the ball into neutral space. Neither
+        // duellist gets it glued to their feet; the re-trap guard prevents the
+        // challenger from collecting his own touch on the very next frame.
+        const dir = spillDirection(e, p, carrier);
+        releaseToKick(e, p);
+        e.ball.pos.add(new THREE.Vector3(dir.x * CONFIG.tackle.spillDistance, 0, dir.z * CONFIG.tackle.spillDistance));
+        e.ball.pos.y = Math.max(CONFIG.ball.radius, e.ball.pos.y);
+        e.ball.kick(new THREE.Vector3(dir.x, 0, dir.z), CONFIG.tackle.spillSpeed, 0.06);
+        e.ball.kickedBy = p.idx;
+        e.ball.kickAge = 0;
+        e.offsideCandidates.clear(); e.offsideTeam = null;
+        tackleOutcome = "spill";
+        stats.tacklesSpilled++;
+        carrier.stumbleT = Math.max(carrier.stumbleT, 0.35);
+        e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} spills tackle (${action}) · q ${quality.score.toFixed(2)}`, p.team);
+      } else if (quality.outcome === "foul" && carrier) {
+        tackleOutcome = "foul";
+        stats.fouls++;
+        carrier.stumbleT = CONFIG.tackle.foulStumble;
         startAction(e, carrier, "stumble");
+        e.rules.emit("FOUL", `Foul by ${p.team === 0 ? "RED" : "BLUE"} ${action} · ${quality.reason}`, p.team);
         if (e.foulsOn) {
           const ownGoal = e.ai.ownGoal(carrier.team, e.rules.half);
           const inBox = Math.abs(carrier.pos.x - ownGoal.x) < 5.5 && Math.abs(carrier.pos.z) < 6.2;
-          e.rules.emit("FOUL", `Foul by ${p.team === 0 ? "RED" : "BLUE"} ${action} @ (${carrier.pos.x.toFixed(1)},${carrier.pos.z.toFixed(1)})`, p.team);
           e.ball.pos.set(carrier.pos.x, CONFIG.ball.radius, carrier.pos.z);
-          e.ball.vel.set(0, 0, 0); e.ball.release();
+          e.ball.vel.set(0, 0, 0);
+          e.ball.release();
+          e.offsideCandidates.clear(); e.offsideTeam = null;
           e.rules.startSetup(inBox ? "penalty" : "free_kick", [carrier.pos.x, carrier.pos.z], carrier.team);
         } else {
-          e.rules.emit("FOUL", `Heavy contact (hook off) — play on`, p.team);
+          // Fouls may be disabled for a no-whistle prototype, but the bad
+          // challenge is still punished: no possession, recovery and a stumble.
+          e.rules.emit("TACKLE", "Bad challenge · fouls disabled, play on", p.team);
         }
-        if (action === "tackle_slide") startAction(e, p, "get_up");
-      } else if (e.ball.possessedBy === null && ballClose) {
-        // Poke/claim loose ball
-        e.ball.possess(p.idx, p.team);
-        e.ball.vel.set(0, 0, 0);
-        e.offsideCandidates.clear(); e.offsideTeam = null;
-        e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} claims loose ball (${action})`, p.team);
-        if (p.team === e.humanTeam && !e.spectator) setHumanPlayer(e, p);
+      } else {
+        tackleOutcome = "miss";
+        stats.tacklesMissed++;
+        p.stumbleT = Math.max(p.stumbleT, CONFIG.tackle.missStumble);
+        if (quality.heavyContact && carrier) carrier.stumbleT = Math.max(carrier.stumbleT, 0.2);
+        e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} missed tackle (${action}) · q ${quality.score.toFixed(2)}`, p.team);
       }
+      if (action === "tackle_slide" && tackleOutcome !== "clean") p.anim.requestAction("get_up", true);
+      p.decisionReason = `TACKLE ${tackleOutcome?.toUpperCase()} · ${quality.reason}`;
       break;
     }
     case "intercept": case "first_touch": case "dribble_touch": {
@@ -278,9 +326,8 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
   }
   if (ballReleasedByAction) {
     aiEvent(e, `KICK released by #${p.idx} ${p.role} · ${action} · ${e.ball.speed.toFixed(1)} m/s${pk?.passTo !== undefined ? ` → #${pk.passTo}` : ""}`);
-  } else if (pk && pk.action === action && (action === "tackle_stand" || action === "tackle_slide")) {
-    const won = e.ball.possessedBy === p.idx;
-    aiEvent(e, `TACKLE ${won ? "WON" : "MISSED"} #${p.idx} · ${action}`);
+  } else if (tackleOutcome) {
+    aiEvent(e, `TACKLE ${tackleOutcome === "clean" ? "WON" : "MISSED"} #${p.idx} · ${action} · ${tackleOutcome} · ${tackleDetail}`);
   } else if (pk && pk.action === action && (action === "intercept" || action === "first_touch" || action === "header" || action.startsWith("gk_"))) {
     const won = e.ball.possessedBy === p.idx;
     aiEvent(e, `${action.toUpperCase()} ${won ? "WON" : "MISSED"} #${p.idx}`);
@@ -307,4 +354,5 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
     }
   }
   p.pendingKick = null;
+  if (isTackleAction(action)) p.tackleChallenge = null;
 }

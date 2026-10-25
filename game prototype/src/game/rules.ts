@@ -15,8 +15,6 @@ export class RulesEngine {
   private eid = 1;
   private rid = 1;
   private halfNotified = false;
-  foulsEnabled = false; // hook, default off
-  log: string[] = [];
   readonly initialKickoffTeam: number;
 
   constructor(initialKickoffTeam = 0) {
@@ -44,8 +42,6 @@ export class RulesEngine {
   emit(type: RuleEventType, detail: string, team?: number) {
     this.events.push({ id: this.eid++, t: this.time, type, detail, team });
     if (this.events.length > 120) this.events.shift();
-    this.log.unshift(`[${this.clock} H${this.half}] ${type} — ${detail}`);
-    if (this.log.length > 40) this.log.pop();
   }
 
   startSetup(kind: string, pos: [number, number], team: number) {

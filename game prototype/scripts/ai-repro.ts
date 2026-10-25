@@ -11,6 +11,7 @@ const trace = args.includes("--trace");
 
 async function gkTest() {
   const { MatchEngine } = await import("../src/game/engine");
+  const { keeperPositionTarget } = await import("../src/game/ai");
   const THREE = await import("three");
   const quiet = console.log;
   console.log = () => {}; console.groupCollapsed = () => {}; console.table = () => {}; console.info = () => {}; console.warn = () => {}; console.groupEnd = () => {};
@@ -22,11 +23,18 @@ async function gkTest() {
         engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
         const keeper = engine.players.find((p) => p.team === 0 && p.role === "GK")!;
         const goal = engine.ai.ownGoal(0, engine.rules.half);
-        keeper.pos.set(goal.x + 0.6 * Math.sign(-goal.x), 0, 0); keeper.facing = goal.x < 0 ? 0 : Math.PI;
-        // Clear everyone else away from the shot.
-        for (const p of engine.players) if (p !== keeper) { p.pos.set(-goal.x * 0.9, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
         const origin = new THREE.Vector3(goal.x - Math.sign(goal.x) * dist, 0.11, z * 0.3);
         const target = new THREE.Vector3(goal.x, 0, z);
+        // Start the keeper at the live angle/near-post position rather than the
+        // old hard-coded 0.6 m off the line. This measures the positioning model
+        // the match actually uses before a shot is struck.
+        const position = keeperPositionTarget(origin, goal, engine.ai.attackSign(0, engine.rules.half));
+        keeper.pos.copy(position.target);
+        keeper.moveTarget.copy(position.target);
+        keeper.vel.set(0, 0, 0);
+        keeper.facing = goal.x < 0 ? 0 : Math.PI;
+        // Clear everyone else away from the shot.
+        for (const p of engine.players) if (p !== keeper) { p.pos.set(-goal.x * 0.9, 0, p.idx % 2 ? 11 : -11); p.vel.set(0, 0, 0); }
         engine.ball.release();
         engine.ball.pos.copy(origin);
         engine.ball.lastTouch = 9; engine.ball.lastTouchTeam = 1;

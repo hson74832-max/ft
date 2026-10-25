@@ -7,6 +7,7 @@ import { WorldPlayer, WorldSnap } from "../ai";
 import { onsideLimit } from "../tactics";
 import { _v1, _v2 } from "./scratch";
 import { powerForAction, startAction } from "./actions";
+import { carrierIsProtected } from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -48,15 +49,16 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
   if (k.has("f")) {
     k.delete("f");
     if (!hasBall && !p.anim.busy) {
-      const id = p.pos.distanceTo(e.ball.pos) > 1.6 ? "tackle_slide" : "tackle_stand";
-      if (startAction(e, p, id, e.ball.pos.clone())) {
-        p.decisionReason = `Human ${id}`;
+      if (p.tackleRecoveryT > 0) p.decisionReason = `Tackle recovery ${p.tackleRecoveryT.toFixed(2)}s`;
+      else if (carrierIsProtected(e)) p.decisionReason = "Carrier is protected after a tackle";
+      else {
+        const id = p.pos.distanceTo(e.ball.pos) > 1.6 ? "tackle_slide" : "tackle_stand";
+        if (startAction(e, p, id, e.ball.pos.clone())) p.decisionReason = `Human ${id}`;
       }
     } else if (hasBall && !p.anim.busy) {
       if (startAction(e, p, "shield")) p.decisionReason = "Human shield";
     }
   }
-  void dt;
 }
 
 /** Assisted pass target: best onside teammate in the aim cone. */
@@ -168,6 +170,7 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
     hasBall: e.ball.possessedBy === p.idx, callForBall: p.callForBall, isHuman: p.isHuman,
     runSerial: p.runSerial, style: p.style,
     moveTarget: p.moveTarget, desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
+    tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
   };
   const dec = e.ai.think(wp, p.roleIdx, snap, e.clock);
   // think() returns its cached object between re-evaluations; identity tells fresh from cached.
@@ -197,11 +200,17 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
       e.ai.nextThink.set(p.idx, e.clock + 0.1); // re-decide shortly; avoids RNG thrash every frame
     } else {
       const actionTarget = dec.action === "dribble_touch" ? undefined : (dec.actionTarget ?? dec.moveTarget).clone();
-      const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, dec.actionSeed, powerForAction(p, dec.action));
+      const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, undefined, powerForAction(p, dec.action));
       if (ok) { p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec); }
       else {
-        const cooldownRemaining = p.anim.cooldowns.get(dec.action) ?? 0;
+        const cooldownRemaining = Math.max(
+          p.anim.cooldowns.get(dec.action) ?? 0,
+          dec.action.startsWith("tackle_") ? p.tackleRecoveryT : 0,
+        );
         e.ai.nextThink.set(p.idx, e.clock + Math.max(0.05, cooldownRemaining)); // retry after cooldown decays
+        if (tr) tr.startActionResult = cooldownRemaining > 0
+          ? `skipped:recovery(${cooldownRemaining.toFixed(2)}s)`
+          : "skipped:clip-rejected";
       }
       if (tr) tr.startActionResult = ok ? `ok:${dec.action}` : `rejected:${dec.action}(cooldown ${(p.anim.cooldowns.get(dec.action) ?? 0).toFixed(2)}s)`;
     }

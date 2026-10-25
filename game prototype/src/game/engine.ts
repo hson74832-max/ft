@@ -23,18 +23,18 @@
  *   debug        ?debug=ai event log and per-frame decision table
  */
 import * as THREE from "three";
-import { RuleEvent } from "./config";
 import { clipExists } from "./anims";
 import { Ball } from "./ball";
 import { RulesEngine } from "./rules";
 import { AIController, WorldSnap, type PassFlight } from "./ai";
 import {
-  addCrowdStub, buildAIDebug, buildWorld, configureScene,
+  buildAIDebug, buildWorld, configureScene,
   createMatchCamera, createRenderer, resizeRenderer, disposeSceneGraph,
+  type MatchRenderer,
 } from "./match/world";
-import { buildPlayers, switchToNearest } from "./match/roster";
-import { createMatchSeed, SeededRandom } from "./random";
-import type { FieldMotionClip } from "./motion";
+import { buildPlayers, defaultHumanIndex, switchToNearest } from "./match/roster";
+import { createMatchSeed, SeededRandom, streamSeed } from "./random";
+import { getMotionRegistryVersion, type FieldMotionClip } from "./motion";
 import { startAction } from "./match/actions";
 import {
   evaluateGkDistribution as computeGkDistribution,
@@ -62,7 +62,7 @@ export type { ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, FamilyMode
  */
 export class MatchEngine {
   canvas: HTMLCanvasElement;
-  renderer: THREE.WebGLRenderer;
+  renderer: MatchRenderer;
   scene = new THREE.Scene();
   camera: THREE.PerspectiveCamera;
   ball: Ball;
@@ -72,7 +72,7 @@ export class MatchEngine {
   ai: AIController;
   headless: boolean;
   players: EnginePlayer[] = [];
-  humanIdx = 4; // RED FWD
+  humanIdx = defaultHumanIndex(0);
   humanTeam = 0;
   spectator = false;
   cameraMode: CameraMode = "broadcast";
@@ -81,6 +81,9 @@ export class MatchEngine {
   aimRaw = false;
   showAIDebug = true;
   showAnimOverlay = true;
+  // Bad challenges are always punished by recovery/miss/foul events. Enabling
+  // this additionally turns severe contact into free kicks/penalties; keeping
+  // it off by default preserves the prototype's uninterrupted 4-minute flow.
   foulsOn = false;
   keys = new Set<string>();
   passCharge = 0; shootCharge = 0;
@@ -104,7 +107,10 @@ export class MatchEngine {
   frameWorld: WorldSnap | null = null;
   passFlight?: PassFlight;
   lastPass?: WorldSnap["lastPass"];
-  readonly tacticalStats = { passes: 0, recycles: 0, keeperRecycles: 0, penetratingPasses: 0, shots: 0, keeperFootControls: 0 };
+  readonly tacticalStats = {
+    passes: 0, recycles: 0, keeperRecycles: 0, penetratingPasses: 0, shots: 0, keeperFootControls: 0,
+    tacklesAttempted: 0, tacklesWon: 0, tacklesSpilled: 0, tacklesMissed: 0, fouls: 0,
+  };
   passLog: PassTrace[] = [];
   outRestartCount = 0;
   openPlayKickCount = 0;
@@ -120,8 +126,11 @@ export class MatchEngine {
   possessionStartedAt = 0;
   transitionTeam: number | null = null;
   transitionUntil = 0;
-  selectedIdx = 4;
-  gkHoldT = 0;
+  selectedIdx = defaultHumanIndex(0);
+  /** Latch for the GOAL event already celebrated; no duplicate action seeds. */
+  celebratedGoalEventId = -1;
+  /** Global clip/binding version at kickoff; a mid-match import changes replay content. */
+  readonly motionRevision = getMotionRegistryVersion();
   // Restart bookkeeping (owned by ./match/restarts).
   restartAutoT = 0;
   placedRestartId = -1;
@@ -131,17 +140,17 @@ export class MatchEngine {
   restartWaitReason = "";
   warnedRestartId = -1;
   restartContactT = 0;
-  crowdStub: THREE.Group;
   disposed = false;
-  onEvent: ((e: RuleEvent[]) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, opts?: { family?: FamilyMode; spectator?: boolean; seed?: number; headless?: boolean; debugAI?: boolean }) {
     this.canvas = canvas;
     // A fixed seed reproduces a match exactly (AI decisions + restart sampling).
     this.matchSeed = opts?.seed ?? createMatchSeed();
-    this.rng = new SeededRandom(this.matchSeed);
-    this.rules = new RulesEngine(this.rng.int(0, 1));
-    this.ai = new AIController(this.rng, this.matchSeed);
+    // Independent streams: engine/restart sampling and AI decisions can no
+    // longer perturb each other's draw order.
+    this.rng = new SeededRandom(streamSeed(this.matchSeed, "match"));
+    this.rules = new RulesEngine(new SeededRandom(streamSeed(this.matchSeed, "coin-toss")).int(0, 1));
+    this.ai = new AIController(new SeededRandom(streamSeed(this.matchSeed, "ai")), this.matchSeed);
     this.headless = opts?.headless ?? false;
     if (opts?.debugAI !== undefined) this.debugAI = opts.debugAI;
     this.familyMode = opts?.family ?? "mixed";
@@ -153,7 +162,6 @@ export class MatchEngine {
     this.ball = new Ball(this.scene);
     buildPlayers(this);
     buildAIDebug(this);
-    this.crowdStub = addCrowdStub(this.scene);
     this.ai.passValidator = (passerIdx, receiverIdx, action) => {
       const passer = this.players[passerIdx];
       return !!passer && planNamedPass(this, passer, action, receiverIdx, undefined, this.rules.pendingRestart?.kind) !== null;

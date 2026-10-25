@@ -60,6 +60,9 @@ export interface FieldMotionClip {
 const clips = new Map<string, FieldMotionClip>();
 /** game slot id (built-in catalogue id) -> imported clip id */
 const slotBindings = new Map<string, string>();
+/** Incremented whenever global clip content or a gameplay slot binding changes. */
+let registryVersion = 0;
+export function getMotionRegistryVersion(): number { return registryVersion; }
 
 /**
  * Which tracked joint pair drives which game bone. The source has no hand or toe
@@ -245,6 +248,7 @@ export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "m
 export function registerFieldMotionClip(clip: FieldMotionClip, opts: { slot?: string } = {}): void {
   if (ANIMATION_CATALOGUE.some((item) => item.id === clip.id)) throw new Error(`Clip ID '${clip.id}' already exists in the built-in catalogue`);
   clips.set(clip.id, clip);
+  registryVersion++;
   const slot = opts.slot ?? (clip.meta.tags.find((t) => t.startsWith("slot:"))?.slice(5));
   if (slot) bindFieldMotionClip(slot, clip.id);
 }
@@ -266,8 +270,11 @@ export function bindFieldMotionClip(slot: string, clipId: string): void {
   if (!target) throw new Error(`Unknown game slot '${slot}'`);
   if (!clips.has(clipId)) throw new Error(`Clip '${clipId}' is not registered`);
   slotBindings.set(slot, clipId);
+  registryVersion++;
 }
-export function unbindFieldMotionClip(slot: string): void { slotBindings.delete(slot); }
+export function unbindFieldMotionClip(slot: string): void {
+  if (slotBindings.delete(slot)) registryVersion++;
+}
 export function getBoundFieldMotionClip(slot: string): FieldMotionClip | undefined {
   const id = slotBindings.get(slot);
   return id ? clips.get(id) : undefined;
@@ -281,7 +288,9 @@ export function getSlotBindings(): { slot: ClipMeta; clip: FieldMotionClip }[] {
   }
   return out;
 }
-export function clearFieldMotionRegistry(): void { clips.clear(); slotBindings.clear(); }
+export function clearFieldMotionRegistry(): void {
+  clips.clear(); slotBindings.clear(); registryVersion++;
+}
 
 /**
  * Loads the animation pack produced by the motion generator (`tool/src/gameclip.ts`).

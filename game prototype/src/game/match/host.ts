@@ -12,6 +12,7 @@ import type { Ball } from "../ball";
 import type { RulesEngine } from "../rules";
 import type { AIController, PassFlight, WorldSnap } from "../ai";
 import type { SeededRandom } from "../random";
+import type { MatchRenderer } from "./world";
 import type {
   ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, FamilyMode, PassTrace,
 } from "./types";
@@ -19,18 +20,19 @@ import type {
 export interface TacticalStats {
   passes: number; recycles: number; keeperRecycles: number;
   penetratingPasses: number; shots: number; keeperFootControls: number;
+  tacklesAttempted: number; tacklesWon: number; tacklesSpilled: number;
+  tacklesMissed: number; fouls: number;
 }
 
 export interface MatchHost {
   // --- render / world -------------------------------------------------------
   canvas: HTMLCanvasElement;
-  renderer: THREE.WebGLRenderer;
+  renderer: MatchRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   headless: boolean;
   aiLines: THREE.LineSegments;
   aiLinePos: THREE.Float32BufferAttribute;
-  crowdStub: THREE.Group;
 
   // --- simulation -----------------------------------------------------------
   ball: Ball;
@@ -70,6 +72,8 @@ export interface MatchHost {
   contactAligned: number;
   actionLog: ActionSeedRecord[];
   lastActionSeed: number | null;
+  celebratedGoalEventId: number;
+  motionRevision: number;
   passLog: PassTrace[];
   tacticalStats: TacticalStats;
   outRestartCount: number;
