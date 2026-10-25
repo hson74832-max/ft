@@ -9,13 +9,22 @@ Measurement basis: `wc -l`, per-function brace matching, call-site greps and a n
 count over comment-stripped sources. LOC counts are physical lines including blanks and
 comments.
 
+> **Update — engine decomposition done.** §1.1 has been carried out: `engine.ts` is now
+> 290 lines of state + public API, and its concerns live in `src/game/match/`
+> (`world`, `roster`, `input`, `camera`, `frame`, `control`, `actions`, `passPlanning`,
+> `offside`, `restarts`, `contacts`, `possession`, `collisions`, `snapshot`, `debug`).
+> The move was mechanical — no logic was rewritten — and every suite still produces
+> byte-identical output. The duplication items in §3.1 and §3.2 are now single
+> implementations inside those modules. Sections below keep the pre-split line numbers
+> as the record of what was found.
+
 ---
 
 ## 0. Scorecard
 
 | Area | Verdict | Worst offender |
 | --- | --- | --- |
-| Monolith files | **Red** | `game prototype/src/game/engine.ts` — 2 091 lines, 41 methods, 6 responsibilities |
+| Monolith files | ~~**Red**~~ **Green** | `game prototype/src/game/engine.ts` was 2 091 lines / 41 methods / 6 responsibilities → now 290 lines (25 of which are the module map) with 11 public methods and `step` as the frame orchestration, split into `src/game/match/` |
 | Huge methods | **Red** | `onContact` 282 lines (10-case switch), `tactics.plan` 278, `step` 256, `actionPose` 210 (31 cases), `ai.think` 200 |
 | Duplication | **Amber** | offside test ×4, lane openness ×2, "nearest opponent within cap" ×5, quaternion from-to ×2 |
 | Magic values | **Amber** | engine 1 120 numeric literals (140 distinct), anims 810 (89), ai 577 (132) |
@@ -28,7 +37,7 @@ comments.
 
 ## 1. Monolith files and classes
 
-### 1.1 `game prototype/src/game/engine.ts` — 2 091 lines, one class doing six jobs
+### 1.1 `game prototype/src/game/engine.ts` — 2 091 lines, one class doing six jobs  ✅ **resolved**
 
 `MatchEngine` currently owns:
 
