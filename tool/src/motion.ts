@@ -1,30 +1,10 @@
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { BASE, BONES, JOINT_ORDER, type JointName, type Joints, type Vec3 } from './rig';
 
-export type Vec3 = { x: number; y: number; z: number };
-export type JointName =
-  | 'pelvis'
-  | 'spine'
-  | 'chest'
-  | 'neck'
-  | 'head'
-  | 'leftShoulder'
-  | 'leftElbow'
-  | 'leftWrist'
-  | 'rightShoulder'
-  | 'rightElbow'
-  | 'rightWrist'
-  | 'leftHip'
-  | 'leftKnee'
-  | 'leftAnkle'
-  | 'leftHeel'
-  | 'leftToe'
-  | 'rightHip'
-  | 'rightKnee'
-  | 'rightAnkle'
-  | 'rightHeel'
-  | 'rightToe';
+export { BONES, JOINT_ORDER, BASE };
+export type { JointName, Joints, Vec3 };
 
-export type Joints = Record<JointName, Vec3>;
+
 export type Normalized2D = { x: number; y: number; visibility?: number };
 /** Low-res person-probability mask. `rect` is the normalized full-frame region it covers. */
 export type MaskData = { data: Uint8ClampedArray; width: number; height: number; rect: [number, number, number, number] };
@@ -54,33 +34,6 @@ export type Movement = 'kick' | 'sprint' | 'header' | 'tackle' | 'save';
  * Anatomical 21-joint humanoid skeleton topology matching the user reference
  * (color-coded limbs: left = coral, right = cyan/blue, center = white, head = yellow).
  */
-export const BONES: Array<[JointName, JointName, 'left' | 'right' | 'center' | 'head']> = [
-  // Central column
-  ['pelvis', 'spine', 'center'],
-  ['spine', 'chest', 'center'],
-  ['chest', 'neck', 'center'],
-  ['neck', 'head', 'head'],
-  // Left arm (subject's anatomical left)
-  ['chest', 'leftShoulder', 'left'],
-  ['leftShoulder', 'leftElbow', 'left'],
-  ['leftElbow', 'leftWrist', 'left'],
-  // Right arm (subject's anatomical right)
-  ['chest', 'rightShoulder', 'right'],
-  ['rightShoulder', 'rightElbow', 'right'],
-  ['rightElbow', 'rightWrist', 'right'],
-  // Left leg
-  ['pelvis', 'leftHip', 'left'],
-  ['leftHip', 'leftKnee', 'left'],
-  ['leftKnee', 'leftAnkle', 'left'],
-  ['leftAnkle', 'leftHeel', 'left'],
-  ['leftHeel', 'leftToe', 'left'],
-  // Right leg
-  ['pelvis', 'rightHip', 'right'],
-  ['rightHip', 'rightKnee', 'right'],
-  ['rightKnee', 'rightAnkle', 'right'],
-  ['rightAnkle', 'rightHeel', 'right'],
-  ['rightHeel', 'rightToe', 'right'],
-];
 
 /** Standard MediaPipe 33-landmark 2D connections for drawing on video overlay */
 export const MEDIAPIPE_CONNECTIONS: Array<[number, number]> = [
@@ -100,31 +53,6 @@ const mix = (a: Vec3, b: Vec3, t: number): Vec3 => v(a.x + (b.x - a.x) * t, a.y 
  * Anatomically proportioned humanoid rest pose (Y-up, in meters, right-handed).
  * Pelvis at ~1.04m, top of head at ~1.88m, feet grounded at ~0.04m.
  */
-const BASE: Joints = {
-  pelvis: v(0, 1.04, 0),
-  spine: v(0, 1.26, 0),
-  chest: v(0, 1.48, 0),
-  neck: v(0, 1.67, 0),
-  head: v(0, 1.88, 0),
-  // Anatomical left (subject's left = viewer's right when facing camera)
-  leftShoulder: v(-0.24, 1.52, 0),
-  leftElbow: v(-0.42, 1.22, 0),
-  leftWrist: v(-0.48, 0.96, 0),
-  // Anatomical right
-  rightShoulder: v(0.24, 1.52, 0),
-  rightElbow: v(0.42, 1.22, 0),
-  rightWrist: v(0.48, 0.96, 0),
-  leftHip: v(-0.16, 1.02, 0),
-  leftKnee: v(-0.17, 0.58, 0),
-  leftAnkle: v(-0.17, 0.12, 0),
-  leftHeel: v(-0.19, 0.06, -0.05),
-  leftToe: v(-0.17, 0.045, 0.14),
-  rightHip: v(0.16, 1.02, 0),
-  rightKnee: v(0.17, 0.58, 0),
-  rightAnkle: v(0.17, 0.12, 0),
-  rightHeel: v(0.19, 0.06, -0.05),
-  rightToe: v(0.17, 0.045, 0.14),
-};
 
 export const MOVEMENTS: Record<Movement, { label: string; subtitle: string; focus: string; detail: string; metric: string; metricLabel: string }> = {
   kick: { label: 'Instep kick', subtitle: 'Plant, rotate, strike, follow through', focus: 'Explosive hip rotation', detail: 'Preserve the pelvis-to-shoulder twist through ball contact. Use an adaptive smoothing cutoff on the striking leg and pin the support foot to avoid sliding.', metric: '42 deg', metricLabel: 'PEAK HIP ROTATION' },
@@ -688,8 +616,6 @@ function quaternionFromTo(from: Vec3, to: Vec3): [number, number, number, number
   const qLen = Math.hypot(cx, cy, cz, qw) || 1;
   return [cx / qLen, cy / qLen, cz / qLen, qw / qLen];
 }
-
-const JOINT_ORDER = Object.keys(BASE) as JointName[];
 
 export type ExportOptions = {
   /** 'compact' writes flat typed arrays (default). 'verbose' is the old per-joint object layout. */

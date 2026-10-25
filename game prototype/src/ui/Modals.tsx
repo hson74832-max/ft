@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Download, Upload, X } from "lucide-react";
 import { CONFIG, SKELETON_CONTRACT } from "../game/config";
 import { getAnimationCatalogue } from "../game/anims";
-import { getRegisteredMotionClips } from "../game/motion";
+import { getRegisteredMotionClips, getSlotBindings, loadGeneratedMotionPack } from "../game/motion";
 import { poseStressTest } from "../game/playerMesh";
 import type { MatchEngine } from "../game/engine";
 import { TeamBadge } from "./Badges";
@@ -189,6 +189,20 @@ function MotionLab({ engine }: { engine: () => MatchEngine | null }) {
     }
   };
 
+  // The animation pack produced by the motion generator (tool/src/gameclip.ts). It is
+  // already loaded on startup; this re-checks and reports the slot bindings.
+  const loadGamePack = async () => {
+    try {
+      const added = await loadGeneratedMotionPack();
+      setMessage(added.length
+        ? `Linked ${added.length} generated clips · ${getSlotBindings().length} gameplay slots bound`
+        : `Generated pack already linked · ${getSlotBindings().length} gameplay slots bound`);
+      setError(""); setTick((x) => x + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Game pack unavailable");
+    }
+  };
+
   const loadSample = async () => {
     try {
       const response = await fetch("/motions/sample_fieldmotion.json");
@@ -210,6 +224,7 @@ function MotionLab({ engine }: { engine: () => MatchEngine | null }) {
         <p className="mt-1 text-[11px] text-zinc-400">Drop a <span className="font-mono">fieldmotion.pose.v2</span> file. Supports <span className="font-mono">frames[].j</span> tracking positions or <span className="font-mono">frames[].q</span> quaternions, bind pose and bone order.</p>
         <div className="mt-3 flex flex-wrap justify-center gap-2">
           <button onClick={() => inputRef.current?.click()} className="rounded bg-[#c8f31d] px-3 py-1.5 text-[11px] font-black uppercase text-black">Choose file</button>
+          <button onClick={() => void loadGamePack()} className="rounded border border-[#c8f31d]/40 bg-[#c8f31d]/10 px-3 py-1.5 text-[11px] font-bold text-[#c8f31d]">Load generated game pack</button>
           <button onClick={() => void loadSample()} className="rounded border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold">Try sample clip</button>
         </div>
         <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(ev) => void importFile(ev.target.files?.[0])} />
@@ -231,6 +246,18 @@ function MotionLab({ engine }: { engine: () => MatchEngine | null }) {
           ))}
         </div>
       </div>
+      {getSlotBindings().length > 0 && (
+        <div>
+          <SectionLabel>Slot bindings · {getSlotBindings().length}</SectionLabel>
+          <div className="max-h-40 grid grid-cols-2 gap-1 overflow-y-auto text-[10px] font-mono" data-tick={tick}>
+            {getSlotBindings().map(({ slot, clip }) => (
+              <div key={slot.id} className="truncate rounded border border-white/10 bg-white/[0.03] px-2 py-1">
+                <span className="text-white">{slot.id}</span> <span className="text-zinc-500">←</span> <span className="text-[#c8f31d]">{clip.id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="rounded-md border border-white/10 bg-white/[0.03] p-3 text-[11px]">
         <SectionLabel>Clip metadata contract</SectionLabel>
         <pre className="overflow-x-auto font-mono text-[10px] leading-relaxed text-zinc-400">{`{ format: "fieldmotion.pose.v2", jointOrder: [...21 joints],

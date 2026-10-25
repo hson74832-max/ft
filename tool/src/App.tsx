@@ -7,6 +7,7 @@ import {
 import SkeletonCanvas, { DEFAULT_STYLE, THEMES, type OtherPlayer, type SceneView, type SkeletonStyle, type ThemeName } from './SkeletonCanvas';
 import SourceCanvas, { DEFAULT_ISOLATION, type IsolationMode, type IsolationSettings } from './SourceCanvas';
 import { demoFrame, exportAnimation, gzipJson, groundLockFrames, jitterScore, MOVEMENTS, resampleFrames, smoothFrames, type ExportOptions, type Movement, type PoseFrame } from './motion';
+import { GAME_CLIP_SPECS, buildGameMotionPack } from './gameclip';
 import { detectPeople, probeDuration, processGif, processVideo, type ColorRole, type ColorTarget, type ModelQuality, type Patches, type Person, type PlayerTrack, type Rgb, type Roi, type TargetFps } from './processor';
 import Sections from './Sections';
 import './index.css';
@@ -32,6 +33,7 @@ function formatTime(seconds: number) {
 
 export default function App() {
   const [movement, setMovement] = useState<Movement>('kick');
+  const [gamePackInfo, setGamePackInfo] = useState('');
   // Original tracked output + the FPS it was sampled at. Retimed views are
   // derived from this, so 60 -> 15 -> 60 no longer destroys samples (the old
   // code overwrote the frames with each interpolated copy).
@@ -422,6 +424,23 @@ export default function App() {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  // The game-ready animation set: one fieldmotion.pack.v1 bundle whose clips are
+  // bound to gameplay slots on import, so the prototype plays them without edits.
+  const downloadGamePack = () => {
+    const pack = buildGameMotionPack(targetFps);
+    const text = JSON.stringify(pack);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `game-motion-pack-${targetFps}fps.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setGamePackInfo(`${pack.clips.length} clips · ${Math.round(text.length / 1024)} KB · ${new Set(GAME_CLIP_SPECS.map((s) => s.slot)).size} game slots`);
   };
 
   const copyFlow = useCallback(async () => {
@@ -1326,6 +1345,13 @@ export default function App() {
               </div>
               <button className="export-button" onClick={download}>
                 <ArrowDownToLine size={16} /> {players && players.length > 1 ? `Export all ${players.length} players` : `Export motion JSON (${targetFps} FPS)`}
+              </button>
+              <button
+                className="export-button"
+                onClick={downloadGamePack}
+                title={`${GAME_CLIP_SPECS.length} clips authored on the shared game skeleton, each tagged with the gameplay slot it drives`}
+              >
+                <Layers3 size={16} /> Game pack{gamePackInfo ? ` · ${gamePackInfo}` : ''}
               </button>
             </div>
           </section>

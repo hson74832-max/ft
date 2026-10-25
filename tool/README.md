@@ -221,6 +221,42 @@ is 17420001 but received 0.
 
 `src/processor.ts` fixes this with a module-level monotonic `clock` and a `stamp()` helper. Every detection (video or GIF, first file or tenth) advances the shared clock, so timestamps never go backwards even though each clip's own frame times restart at zero. Recreating the landmarker per file would also work, but reuse is faster and avoids reloading the model.
 
+## Game-ready animation pack
+
+The studio also ships a **generator** that writes animation the 5v5 prototype plays
+directly. `src/rig.ts` is the shared 21-joint field skeleton (joint names, bone topology,
+bind pose) with no browser or MediaPipe imports, so the same numbers drive the studio and
+the game. `src/gameclip.ts` authors one clip per gameplay slot from joint-angle curves and
+expands them with forward kinematics:
+
+- **Locomotion:** idle, walk, jog, sprint, jockey (loops whose first and last frame match).
+- **Ball actions:** short/long/through pass, laces/finesse/volley shot, header, first touch,
+  dribble touch, intercept — each with a contact frame where the foot reaches the ball.
+- **Duels and keeper:** standing and sliding tackle (root motion), dive left/right (root
+  motion), catch, parry, punt, roll.
+- **Restarts, turns, recoveries:** throw-in, corner, 90°/180° turns, celebrate, stumble,
+  get up, shield.
+
+Every clip carries `metadata.slot` (the game animation slot it drives), `duration`,
+`contactFrame`, `interruptible`, `priority` and a `ball_contact` frame event, and every
+bone keeps its bind length because positions come from FK rather than from noise.
+
+**Game pack** in the export strip downloads `game-motion-pack-<fps>fps.json` — a
+`fieldmotion.pack.v1` bundle. Drop it on the prototype's Motion Lab (or use *Load generated
+game pack*) and the match animates from it. The headless build writes the same file to
+`game prototype/public/motions/`:
+
+```bash
+cd "game prototype"
+node_modules/.bin/esbuild ../tool/scripts/build-game-clips.ts \
+  --bundle --platform=node --format=cjs --outfile=/tmp/build-game-clips.cjs
+node /tmp/build-game-clips.cjs public/motions 30
+```
+
+The pipeline, clip ↔ slot table, root-motion axis convention (`+Z` forward, `+X` to the
+subject's right) and the automated integration checks are documented in
+`game prototype/docs/MOTION-PIPELINE.md`.
+
 ## Architecture
 
 ```text
@@ -245,7 +281,7 @@ Rig retargeting (bind-direction -> tracked-direction quaternions)
 3D animation output (interactive projected skeleton + JSON export)
 ```
 
-The UI and playback are in `src/App.tsx`, file decoding and pose inference in `src/processor.ts`, coordinate mapping, demos, filtering and export in `src/motion.ts`, and the rotatable 3D-to-canvas skeleton projection in `src/SkeletonCanvas.tsx`.
+The UI and playback are in `src/App.tsx`, file decoding and pose inference in `src/processor.ts`, coordinate mapping, demos, filtering and export in `src/motion.ts`, the rotatable 3D-to-canvas skeleton projection in `src/SkeletonCanvas.tsx`, the shared field skeleton in `src/rig.ts`, and the game-ready clip generator in `src/gameclip.ts` (`scripts/build-game-clips.ts` writes the pack headlessly).
 
 ## Step-by-step implementation
 

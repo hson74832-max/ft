@@ -10,6 +10,10 @@ Object.assign(globalThis, { document: { createElement: canvas }, window: { locat
 function simulate(seed: number) {
   const engine = new MatchEngine(canvas() as unknown as HTMLCanvasElement, { seed, headless: true, spectator: true, debugAI: false });
   let samples = 0, covered = 0, plansWithCover = 0, runFrames = 0, planSamples = 0, inRange = 0;
+  // Off-ball involvement: are players actually moving, and how many separate runs do
+  // they commit to? A static web keeps both numbers near zero.
+  let offBallFrames = 0, movingFrames = 0, runEpisodes = 0, matchSeconds = 0;
+  const runStreak = new Map<number, number>();
   let lastPassTime = -1, releaseCount = 0, sameTeamPasses = 0, alignedPasses = 0, centralSquare = 0;
   const trace: (number | string)[][] = [];
   for (let frame = 0; frame < 60 * 420; frame++) {
@@ -39,8 +43,18 @@ function simulate(seed: number) {
         }
         if (engine.players.some((p) => p.team === carrier.team && p.supportJob === "runner"
           && p.moveTarget.x * sign > p.pos.x * sign + 1 && p.speed > 4)) runFrames++;
+        for (const mate of engine.players) {
+          if (mate.team !== carrier.team || mate.idx === carrier.idx || mate.role === "GK") continue;
+          offBallFrames++;
+          if (mate.speed > 1) movingFrames++;
+          const running = mate.supportJob === "runner" && (mate.supportRun === "spin" || mate.supportRun === "drive") && mate.speed > 3.5;
+          const streak = running ? (runStreak.get(mate.idx) ?? 0) + 1 : 0;
+          if (streak === 15) runEpisodes++;   // a run must last 0.25 s to count
+          runStreak.set(mate.idx, streak);
+        }
       }
     }
+    matchSeconds = engine.clock;
     if (engine.rules.phase === "FULLTIME") break;
   }
   const result = { seed, phase: engine.rules.phase, score: engine.rules.score.join(":"),
@@ -48,6 +62,8 @@ function simulate(seed: number) {
     actualCentralCoverPct: Math.round(covered / Math.max(1, samples) * 100),
     centralCoverPlanPct: Math.round(plansWithCover / Math.max(1, planSamples) * 100),
     activeRunPct: Math.round(runFrames / Math.max(1, samples) * 100),
+    movingPct: Math.round(movingFrames / Math.max(1, offBallFrames) * 100),
+    runsPerMinute: +(runEpisodes / Math.max(0.5, matchSeconds / 60)).toFixed(1),
     inShootingRangePct: Math.round(inRange / Math.max(1, samples) * 100),
     centralSquare, sameTeamPasses, alignedPasses, releaseCount };
   assert.equal(engine.rules.phase, "FULLTIME", `match ${seed} did not finish`);

@@ -1,4 +1,19 @@
-// FieldMotion v2 JSON importer and sampler for the shared player rig.
+// FieldMotion v2 importer, hierarchy-aware retargeter, sampler and slot registry.
+//
+// The generator (the `tool` project) exports tracked/synthesised poses as joint
+// positions plus per-bone "bind direction -> tracked direction" quaternions in
+// WORLD space. The game rig is a parent-child chain of Groups whose rest
+// rotations are all identity, so a world quaternion cannot be copied straight
+// into a local bone. This module converts the tracked skeleton into LOCAL bone
+// rotations by walking the shared 21-bone contract top-down:
+//
+//   world(bone) = shortestArc(restDirection(bone) -> trackedDirection(bone))
+//   local(bone) = inverse(world(parent)) * world(bone)
+//
+// `restDirection` is each rig's own rest direction, so a generator clip authored
+// from an A-pose and a rig whose arms hang straight down still resolve to the
+// same world limb directions. Clips can also be bound to a game slot ("sprint",
+// "pass_short", ...) so produced animation drives the prototype directly.
 import * as THREE from "three";
 import { ANIMATION_CATALOGUE, ClipCategory, ClipMeta, SKELETON_CONTRACT } from "./config";
 import { Pose, emptyPose } from "./skeleton";
@@ -13,7 +28,16 @@ export interface FieldMotionDocument {
   boneOrder: [string, string][];
   bindPose: number[];
   frames: { t: number; c?: number; h?: number; j: number[]; q?: number[] }[];
-  metadata?: Partial<ClipMeta> & { frameEvents?: { t: number; type: string }[] };
+  metadata?: Partial<ClipMeta> & { frameEvents?: { t: number; type: string }[]; slot?: string; link?: string };
+}
+
+/** A whole tracked session / generated animation set in one file. */
+export interface FieldMotionPackDocument {
+  format: "fieldmotion.pack.v1";
+  source?: string;
+  generator?: string;
+  note?: string;
+  clips: FieldMotionDocument[];
 }
 
 export interface MotionFrame {
@@ -34,27 +58,74 @@ export interface FieldMotionClip {
 }
 
 const clips = new Map<string, FieldMotionClip>();
+/** game slot id (built-in catalogue id) -> imported clip id */
+const slotBindings = new Map<string, string>();
 
-const JOINT_TO_CANONICAL: Record<string, string> = {
-  "pelvis->spine": "spine",
-  "spine->chest": "chest",
-  "chest->neck": "neck",
-  "neck->head": "head",
-  "chest->leftShoulder": "shoulder.L",
-  "leftShoulder->leftElbow": "upperArm.L",
-  "leftElbow->leftWrist": "lowerArm.L",
-  "chest->rightShoulder": "shoulder.R",
-  "rightShoulder->rightElbow": "upperArm.R",
-  "rightElbow->rightWrist": "lowerArm.R",
-  "leftHip->leftKnee": "upperLeg.L",
-  "leftKnee->leftAnkle": "lowerLeg.L",
-  "leftAnkle->leftHeel": "foot.L",
-  "leftHeel->leftToe": "toe.L",
-  "rightHip->rightKnee": "upperLeg.R",
-  "rightKnee->rightAnkle": "lowerLeg.R",
-  "rightAnkle->rightHeel": "foot.R",
-  "rightHeel->rightToe": "toe.R",
-};
+/**
+ * Which tracked joint pair drives which game bone. The source has no hand or toe
+ * direction (leaf joints), so those stay at their bind rotation.
+ */
+export interface BoneMapping { bone: string; from: string; to: string }
+export const FIELDMOTION_BONE_MAP: BoneMapping[] = [
+  { bone: "spine", from: "pelvis", to: "spine" },
+  { bone: "chest", from: "spine", to: "chest" },
+  { bone: "neck", from: "chest", to: "neck" },
+  { bone: "head", from: "neck", to: "head" },
+  { bone: "shoulder.L", from: "chest", to: "leftShoulder" },
+  { bone: "upperArm.L", from: "leftShoulder", to: "leftElbow" },
+  { bone: "lowerArm.L", from: "leftElbow", to: "leftWrist" },
+  { bone: "shoulder.R", from: "chest", to: "rightShoulder" },
+  { bone: "upperArm.R", from: "rightShoulder", to: "rightElbow" },
+  { bone: "lowerArm.R", from: "rightElbow", to: "rightWrist" },
+  { bone: "upperLeg.L", from: "leftHip", to: "leftKnee" },
+  { bone: "lowerLeg.L", from: "leftKnee", to: "leftAnkle" },
+  { bone: "foot.L", from: "leftAnkle", to: "leftToe" },
+  { bone: "upperLeg.R", from: "rightHip", to: "rightKnee" },
+  { bone: "lowerLeg.R", from: "rightKnee", to: "rightAnkle" },
+  { bone: "foot.R", from: "rightAnkle", to: "rightToe" },
+];
+const BONE_MAP = new Map(FIELDMOTION_BONE_MAP.map((m) => [m.bone, m]));
+
+/**
+ * Rest direction of a game bone: the direction of its first child offset. Bones
+ * whose parent chain ends there (head, toe, hand) fall back to +Y, which is only
+ * used when a clip actually drives them.
+ */
+const REST_DIRECTIONS = new Map<string, THREE.Vector3>();
+for (const bone of SKELETON_CONTRACT.bones) {
+  const child = SKELETON_CONTRACT.bones.find((b) => b.parent === bone.name);
+  REST_DIRECTIONS.set(bone.name, child
+    ? new THREE.Vector3(child.offset[0], child.offset[1], child.offset[2]).normalize()
+    : new THREE.Vector3(0, 1, 0));
+}
+const HIERARCHY = [...SKELETON_CONTRACT.bones];
+
+/**
+ * Retarget world-space joints onto the game rig. Walks the contract in order
+ * (parents before children) and writes one LOCAL Euler per driven bone.
+ */
+export function retargetPoseFromJoints(joint: (name: string) => THREE.Vector3 | undefined): Pose {
+  const pose = emptyPose();
+  const worldRotation = new Map<string, THREE.Quaternion>();
+  const identity = new THREE.Quaternion();
+  for (const bone of HIERARCHY) {
+    const parentRotation = bone.parent ? worldRotation.get(bone.parent) ?? identity : identity;
+    const mapping = BONE_MAP.get(bone.name);
+    const from = mapping ? joint(mapping.from) : undefined;
+    const to = mapping ? joint(mapping.to) : undefined;
+    const tracked = from && to ? to.clone().sub(from) : undefined;
+    if (!tracked || tracked.lengthSq() < 1e-8) {
+      // Not driven (or a degenerate pair): identity local rotation.
+      worldRotation.set(bone.name, parentRotation);
+      continue;
+    }
+    const world = new THREE.Quaternion().setFromUnitVectors(REST_DIRECTIONS.get(bone.name)!, tracked.normalize());
+    const local = parentRotation.clone().invert().multiply(world);
+    worldRotation.set(bone.name, world);
+    pose.set(bone.name, new THREE.Euler().setFromQuaternion(local, "XYZ"));
+  }
+  return pose;
+}
 
 const ALLOWED_CATEGORIES = new Set<ClipCategory>([
   "locomotion", "turn", "pass", "shoot", "header", "tackle", "gk", "restart", "celebrate", "recover", "control", "idle",
@@ -64,15 +135,35 @@ export function parseFieldMotionJSON(sourceText: string, filename = "motion.json
   let doc: FieldMotionDocument;
   try { doc = JSON.parse(sourceText) as FieldMotionDocument; }
   catch (error) { throw new Error(`Invalid JSON: ${error instanceof Error ? error.message : "parse failed"}`); }
+  return parseFieldMotionDocument(doc, filename, overrideId);
+}
 
+/** Accepts a single `fieldmotion.pose.v2` document or a `fieldmotion.pack.v1` bundle. */
+export function parseFieldMotionText(sourceText: string, filename = "motion.json"): FieldMotionClip[] {
+  let doc: unknown;
+  try { doc = JSON.parse(sourceText); }
+  catch (error) { throw new Error(`Invalid JSON: ${error instanceof Error ? error.message : "parse failed"}`); }
+  const format = (doc as { format?: string })?.format;
+  if (format === "fieldmotion.pack.v1") {
+    const pack = doc as FieldMotionPackDocument;
+    if (!Array.isArray(pack.clips) || pack.clips.length === 0) throw new Error("Pack has no clips");
+    return pack.clips.map((clip, i) => parseFieldMotionDocument(clip, `${filename}#${i}`));
+  }
+  return [parseFieldMotionDocument(doc as FieldMotionDocument, filename)];
+}
+
+export function parseFieldMotionDocument(doc: FieldMotionDocument, filename = "motion.json", overrideId?: string): FieldMotionClip {
   if (doc.format !== "fieldmotion.pose.v2") throw new Error("Expected format fieldmotion.pose.v2");
   if (!Array.isArray(doc.jointOrder) || !Array.isArray(doc.boneOrder) || !Array.isArray(doc.bindPose) || !Array.isArray(doc.frames) || doc.frames.length < 1) {
     throw new Error("Missing jointOrder, boneOrder, bindPose, or frames");
   }
   if (doc.bindPose.length !== doc.jointOrder.length * 3) throw new Error("bindPose must contain x/y/z for every joint");
   const jointMap = new Map(doc.jointOrder.map((name, i) => [name, i]));
-  for (const key of ["pelvis", "leftWrist", "rightWrist", "leftAnkle", "rightAnkle", "leftToe", "rightToe"]) {
-    if (!jointMap.has(key)) throw new Error(`jointOrder is missing required joint '${key}'`);
+  // Every joint the retargeter reads must exist, otherwise limbs would silently freeze.
+  for (const mapping of FIELDMOTION_BONE_MAP) {
+    for (const name of [mapping.from, mapping.to]) {
+      if (!jointMap.has(name)) throw new Error(`jointOrder is missing required joint '${name}'`);
+    }
   }
 
   const source = doc.source || filename;
@@ -86,6 +177,7 @@ export function parseFieldMotionJSON(sourceText: string, filename = "motion.json
   const events = (metadata.frameEvents ?? []).filter((e) => Number.isFinite(e.t) && typeof e.type === "string").map((e) => ({ t: Math.max(0, e.t), type: e.type }));
   const contact = events.find((e) => e.type.toLowerCase() === "ball_contact");
   const contactFrame = typeof metadata.contactFrame === "number" ? metadata.contactFrame : contact ? contact.t / duration : undefined;
+  const slot = (metadata.slot ?? metadata.link) as string | undefined;
   const meta: ClipMeta = {
     id,
     category,
@@ -96,20 +188,18 @@ export function parseFieldMotionJSON(sourceText: string, filename = "motion.json
     contactFrame,
     interruptible: metadata.interruptible ?? [0.72, 1],
     priority: metadata.priority ?? 5,
-    tags: metadata.tags ?? ["fieldmotion-json", ...(contactFrame !== undefined ? ["ball_contact"] : [])],
+    tags: metadata.tags ?? ["fieldmotion-json", ...(contactFrame !== undefined ? ["ball_contact"] : []), ...(slot ? [`slot:${slot}`] : [])],
     description: metadata.description ?? `FieldMotion pose clip: ${source}`,
   };
   if (meta.contactFrame !== undefined && (meta.contactFrame < 0 || meta.contactFrame > 1)) throw new Error("contactFrame must be normalized to 0..1");
 
-  const bindIndex = (name: string) => {
-    const i = jointMap.get(name);
-    if (i === undefined) throw new Error(`Bone mapping needs joint '${name}'`);
-    return i;
+  const jointAt = (values: number[], name: string): THREE.Vector3 => {
+    const index = jointMap.get(name);
+    if (index === undefined) throw new Error(`Missing joint '${name}'`);
+    return new THREE.Vector3(values[index * 3], values[index * 3 + 1], values[index * 3 + 2]);
   };
-  const bindJoint = (name: string) => new THREE.Vector3(
-    doc.bindPose[bindIndex(name) * 3], doc.bindPose[bindIndex(name) * 3 + 1], doc.bindPose[bindIndex(name) * 3 + 2],
-  );
-  const bindPelvis = bindJoint("pelvis");
+  const bindPelvis = jointAt(doc.bindPose, "pelvis");
+
   const frames: MotionFrame[] = [];
   let previousT = -Infinity;
   for (const [frameIndex, frame] of doc.frames.entries()) {
@@ -117,40 +207,77 @@ export function parseFieldMotionJSON(sourceText: string, filename = "motion.json
     previousT = frame.t;
     if (!Array.isArray(frame.j) || frame.j.length !== doc.jointOrder.length * 3) throw new Error(`frames[${frameIndex}].j has the wrong number of coordinates`);
     if (frame.q && frame.q.length !== doc.boneOrder.length * 4) throw new Error(`frames[${frameIndex}].q needs one x/y/z/w quaternion per boneOrder item`);
-    const pose = emptyPose();
-    for (let boneIndex = 0; boneIndex < doc.boneOrder.length; boneIndex++) {
-      const edge = doc.boneOrder[boneIndex];
-      const canonical = JOINT_TO_CANONICAL[`${edge[0]}->${edge[1]}`];
-      if (!canonical) continue;
-      let q: THREE.Quaternion;
-      if (frame.q) {
-        const i = boneIndex * 4;
-        q = new THREE.Quaternion(frame.q[i], frame.q[i + 1], frame.q[i + 2], frame.q[i + 3]).normalize();
-      } else {
-        const start = frameJoint(frame.j, doc.jointOrder, edge[0]);
-        const end = frameJoint(frame.j, doc.jointOrder, edge[1]);
-        const bind = bindJoint(edge[1]).sub(bindJoint(edge[0])).normalize();
-        const tracked = end.sub(start).normalize();
-        q = new THREE.Quaternion().setFromUnitVectors(bind, tracked);
-      }
-      pose.set(canonical, new THREE.Euler().setFromQuaternion(q, "XYZ"));
-    }
-    const pelvis = frameJoint(frame.j, doc.jointOrder, "pelvis");
-    const root = pelvis.sub(bindPelvis);
+    // Joint positions are the authority: they preserve limb lengths and resolve to
+    // the rig through the hierarchy, independent of the generator's bind pose.
+    const get = (name: string) => jointAt(frame.j, name);
+    const pose = retargetPoseFromJoints(get);
+    const root = get("pelvis").sub(bindPelvis);
     frames.push({ t: frame.t, confidence: frame.c ?? 1, held: frame.h === 1, pose, root });
   }
   if (frames.length < 1) throw new Error("No usable pose frames");
   return { id, source, meta, duration, frames, events };
 }
 
-export function registerFieldMotionClip(clip: FieldMotionClip): void {
+export function registerFieldMotionClip(clip: FieldMotionClip, opts: { slot?: string } = {}): void {
   if (ANIMATION_CATALOGUE.some((item) => item.id === clip.id)) throw new Error(`Clip ID '${clip.id}' already exists in the built-in catalogue`);
   clips.set(clip.id, clip);
+  const slot = opts.slot ?? (clip.meta.tags.find((t) => t.startsWith("slot:"))?.slice(5));
+  if (slot) bindFieldMotionClip(slot, clip.id);
 }
 
 export function getFieldMotionClip(id: string): FieldMotionClip | undefined { return clips.get(id); }
 export function getRegisteredMotionClips(): FieldMotionClip[] { return [...clips.values()]; }
 export function getFieldMotionCatalogue(): ClipMeta[] { return [...clips.values()].map((clip) => clip.meta); }
+
+/** Slot ids a produced clip can drive: every built-in clip id. */
+export function getMotionSlots(): ClipMeta[] { return ANIMATION_CATALOGUE; }
+
+/**
+ * Bind an imported clip to a built-in game slot. Locomotion slots feed the blend
+ * space, every other slot replaces that action's procedural pose — so a clip
+ * produced by the generator plays in the prototype without code changes.
+ */
+export function bindFieldMotionClip(slot: string, clipId: string): void {
+  const target = ANIMATION_CATALOGUE.find((c) => c.id === slot);
+  if (!target) throw new Error(`Unknown game slot '${slot}'`);
+  if (!clips.has(clipId)) throw new Error(`Clip '${clipId}' is not registered`);
+  slotBindings.set(slot, clipId);
+}
+export function unbindFieldMotionClip(slot: string): void { slotBindings.delete(slot); }
+export function getBoundFieldMotionClip(slot: string): FieldMotionClip | undefined {
+  const id = slotBindings.get(slot);
+  return id ? clips.get(id) : undefined;
+}
+export function getSlotBindings(): { slot: ClipMeta; clip: FieldMotionClip }[] {
+  const out: { slot: ClipMeta; clip: FieldMotionClip }[] = [];
+  for (const [slot, clipId] of slotBindings) {
+    const meta = ANIMATION_CATALOGUE.find((c) => c.id === slot);
+    const clip = clips.get(clipId);
+    if (meta && clip) out.push({ slot: meta, clip });
+  }
+  return out;
+}
+export function clearFieldMotionRegistry(): void { clips.clear(); slotBindings.clear(); }
+
+/**
+ * Loads the animation pack produced by the motion generator (`tool/src/gameclip.ts`).
+ * Every clip carries `metadata.slot`, so registering it binds it to the gameplay action
+ * it drives. Already-loaded clips are skipped, which makes this safe to call on startup
+ * and again from Motion Lab.
+ */
+export async function loadGeneratedMotionPack(url = "/motions/game-motion-pack.json"): Promise<FieldMotionClip[]> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`motion pack HTTP ${response.status}`);
+  const parsed = parseFieldMotionText(await response.text(), url.split("/").pop() || "game-motion-pack.json");
+  const added: FieldMotionClip[] = [];
+  for (const clip of parsed) {
+    if (clips.has(clip.id)) continue;
+    if (validateFieldMotionAgainstSkeleton(clip).length) continue;
+    registerFieldMotionClip(clip);
+    added.push(clip);
+  }
+  return added;
+}
 
 export function sampleFieldMotion(clip: FieldMotionClip, time: number): { pose: Pose; root: THREE.Vector3; confidence: number; held: boolean } {
   const localTime = clip.meta.loop ? ((time % clip.duration) + clip.duration) % clip.duration : THREE.MathUtils.clamp(time, 0, clip.duration);
@@ -178,22 +305,56 @@ export function sampleFieldMotion(clip: FieldMotionClip, time: number): { pose: 
   };
 }
 
+/**
+ * Structural checks before a clip reaches the animation controller: the pose must
+ * cover every contract bone (the sampler fills any gap), times must be ordered,
+ * and a retargeted pose must stay finite and physically plausible.
+ */
 export function validateFieldMotionAgainstSkeleton(clip: FieldMotionClip): string[] {
   const errors: string[] = [];
   const required = SKELETON_CONTRACT.bones.map((bone) => bone.name);
   for (const [index, frame] of clip.frames.entries()) {
-    const missing = required.filter((name) => !frame.pose.has(name));
-    // A valid source need not author every canonical helper joint, but the sampler always fills the full contract.
-    if (missing.length > 0 && frame.pose.size < required.length) {
-      for (const name of missing) if (!frame.pose.has(name)) frame.pose.set(name, new THREE.Euler());
-    }
+    for (const name of required) if (!frame.pose.has(name)) frame.pose.set(name, new THREE.Euler());
     if (frame.t < 0) errors.push(`frame ${index} has negative time`);
+    if (!Number.isFinite(frame.root.x) || !Number.isFinite(frame.root.y) || !Number.isFinite(frame.root.z)) {
+      errors.push(`frame ${index} has a non-finite root translation`);
+      break;
+    }
+    if (Math.abs(frame.root.y) > 1.2 || Math.abs(frame.root.x) > 6 || Math.abs(frame.root.z) > 6) {
+      errors.push(`frame ${index} root translation is outside a playable range (${frame.root.x.toFixed(2)}, ${frame.root.y.toFixed(2)}, ${frame.root.z.toFixed(2)})`);
+      break;
+    }
+    for (const [name, euler] of frame.pose) {
+      if (!Number.isFinite(euler.x) || !Number.isFinite(euler.y) || !Number.isFinite(euler.z)) {
+        errors.push(`frame ${index} bone '${name}' has a non-finite rotation`);
+        break;
+      }
+    }
+    if (errors.length) break;
   }
+  if (clip.frames.length > 1) {
+    const first = clip.frames[0].t, last = clip.frames[clip.frames.length - 1].t;
+    if (!(last > first)) errors.push("clip duration must be positive");
+  }
+  if (!ANIMATION_CATALOGUE.some((c) => c.id === clip.id)) {
+    // Imported ids are fine; only built-in ids would collide.
+  } else errors.push(`clip id '${clip.id}' collides with a built-in clip`);
   return errors;
 }
 
-function frameJoint(values: number[], order: string[], name: string): THREE.Vector3 {
-  const index = order.indexOf(name);
-  if (index < 0) throw new Error(`Missing joint '${name}'`);
-  return new THREE.Vector3(values[index * 3], values[index * 3 + 1], values[index * 3 + 2]);
+/**
+ * World-space direction of a rig bone after applying a pose. Used by tests and the
+ * Motion Lab preview to prove that an imported clip really moves the shared rig
+ * (rather than merely being accepted by the parser).
+ */
+export function rigBoneWorldDirection(pose: Pose, bone: string): THREE.Vector3 {
+  const chain: string[] = [];
+  let cursor: string | null = bone;
+  while (cursor) { chain.unshift(cursor); cursor = (SKELETON_CONTRACT.bones.find((b) => b.name === cursor)?.parent ?? null) as string | null; }
+  const rotation = new THREE.Quaternion();
+  for (const name of chain) {
+    const e = pose.get(name);
+    if (e) rotation.multiply(new THREE.Quaternion().setFromEuler(e));
+  }
+  return REST_DIRECTIONS.get(bone)!.clone().applyQuaternion(rotation).normalize();
 }

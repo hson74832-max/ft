@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { CONFIG, FORMATIONS } from "./config";
 import { clipExists } from "./anims";
 import { SeededRandom, tieBreakHash } from "./random";
-import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, type SupportJob } from "./tactics";
+import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, spaceAhead, type RunType, type SupportJob } from "./tactics";
 
 export interface PlayerStyle {
   directness: number;
@@ -45,6 +45,10 @@ export interface WorldSnap {
   ballKickAge?: number;
   passFlight?: PassFlight;
   lastPass?: { passer: number; receiver: number; team: number; t: number };
+  /** Clock time the current owner gained the ball (carrier "time on the ball"). */
+  ownerSince?: number;
+  /** Clock time until which the team in possession is in its attacking transition window. */
+  transitionUntil?: number;
 }
 
 export interface AIDecision {
@@ -60,6 +64,8 @@ export interface AIDecision {
   urgent: boolean;
   supportJob?: SupportJob;
   supportMode?: string;
+  runType?: RunType;
+  runTriggered?: boolean;
   passPurpose?: "progress" | "recycle" | "switch" | "penetrate";
   passOptions?: { receiver: number; lane: number; space: number; gain: number; score: number; purpose: string }[];
 }
@@ -166,11 +172,14 @@ export class AIController {
       if (job) {
         const target = job.target.clone();
         p.callForBall = job.callForBall;
+        const running = job.runType === "spin" || job.runType === "drive";
         return this.store(p.idx, {
           moveTarget: target, desiredSpeed: job.desiredSpeed, action: null,
-          reason: `${job.job.toUpperCase()}: ${job.mode} | ${plan?.phase} | width ${Math.abs(target.z).toFixed(1)}m | depth ${(target.x * atkSign).toFixed(1)}m${job.callForBall ? " | CALL" : ""}`,
-          supportJob: job.job, supportMode: job.mode,
-          utilities: { support: job.score, lane: job.lane, space: job.space, cover: job.job === "pivot" ? 1 : 0 }, urgent: job.job === "pivot",
+          reason: `${job.job.toUpperCase()}/${job.runType.toUpperCase()}: ${job.mode} | ${plan?.phase} | width ${Math.abs(target.z).toFixed(1)}m | depth ${(target.x * atkSign).toFixed(1)}m | advance ${job.advance.toFixed(1)}m | space ahead ${job.vacancy.toFixed(2)}${job.callForBall ? " | CALL" : ""}${plan?.trigger.active ? " | TRIGGERED" : ""}`,
+          supportJob: job.job, supportMode: job.mode, runType: job.runType, runTriggered: plan?.trigger.active,
+          utilities: { support: job.score, lane: job.lane, space: job.space, vacancy: job.vacancy,
+            advance: job.advance, cover: job.job === "pivot" ? 1 : 0, triggered: plan?.trigger.active ? 1 : 0 },
+          urgent: job.job === "pivot" || (running && !!plan?.trigger.active),
         });
       }
     }
@@ -326,6 +335,12 @@ export class AIController {
     const field = opponents.filter((q) => q.role !== "GK");
     const mates = snap.players.filter((q) => q.team === p.team && q.idx !== p.idx);
     const plan = this.tactics.plan(snap, p.team);
+    // Attacking phase governs how much the carrier values progression over safety.
+    // `transition` is the explicit state the old AI lacked: possession just won from
+    // the opponent — pass/carry forward first, recycle only if nothing is on.
+    const phase = plan?.phase ?? "progress";
+    const weights = T.phaseWeights[phase] ?? T.phaseWeights.progress;
+    const trigger = plan?.trigger;
     const distance = groundDistance(p.pos, goal);
     const pressure = nearestSpace(p.pos, field);
     const pressed = pressure < T.pressureDistance;
@@ -335,19 +350,25 @@ export class AIController {
     const goalDepth = Math.max(0.01, (goal.x - p.pos.x) * sign);
     const opening = Math.abs(Math.atan2(CONFIG.pitch.goalWidth / 2 - p.pos.z, goalDepth)
       - Math.atan2(-CONFIG.pitch.goalWidth / 2 - p.pos.z, goalDepth));
+    // A 0.25 rad (~14°) window is a full-size target; a partially blocked lane is a
+    // worse shot, not a disqualified one.
+    const windowRatio = THREE.MathUtils.clamp(opening / 0.25, 0.12, 1);
     const inRange = distance <= T.edgeShotDistance && opening >= T.shotMinOpening;
     const clearChance = distance < T.clearShotDistance && shotLane >= T.shotLaneThreshold && pressure > 1.7 && opening > 0.24;
-    const edgeChance = inRange && shotLane > 0.82 && pressure > 2.3;
+    const edgeChance = inRange && shotLane > 0.62;
+    const quality = inRange
+      ? THREE.MathUtils.clamp(1 - distance / (T.edgeShotDistance + 4), 0, 1) * (0.30 + 0.70 * shotLane) * windowRatio
+      : 0;
     const shotKey = `shoot:${Math.floor(distance / 4)}`;
     const shoot = inRange
-      ? 0.25 + shotLane * 0.35 + Math.max(0, 1 - distance / T.edgeShotDistance) * 0.45
-        + Math.min(opening, 0.8) * 0.25 + (clearChance ? 0.5 : edgeChance ? 0.25 : 0)
-        + p.style.shooting * 0.06 - (pressed && !clearChance ? 0.2 : 0) - novelty(shotKey) * 0.2
+      ? 0.26 + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
+        - (pressed && shotLane < 0.4 ? 0.18 : 0) - novelty(shotKey) * 0.2
       : -1;
     const shotId = ["shoot_normal", "shoot_finesse"].find((id) => this.can(p, id));
+    const lineU = this.defensiveLineU(snap, p.team);
 
     type Option = { mate: WorldPlayer; target: THREE.Vector3; id: string; key: string; lane: number; space: number;
-      gain: number; score: number; purpose: NonNullable<AIDecision["passPurpose"]>; safe: boolean };
+      gain: number; score: number; purpose: NonNullable<AIDecision["passPurpose"]>; safe: boolean; crossesLine: boolean };
     const options: Option[] = [];
     for (const mate of mates) {
       if (this.isOffsidePosition(mate.pos, snap.ballPos, p.team, snap)) continue;
@@ -355,7 +376,10 @@ export class AIController {
       if (currentDistance < 2 || currentDistance > 27) continue;
       const job = plan?.assignments.get(mate.idx);
       const gainNow = (mate.pos.x - p.pos.x) * sign;
-      const tryThrough = job?.job === "runner" && gainNow > 1.5 && this.can(p, "pass_through");
+      // A player making a run gets the through ball; a static option does not.
+      const runnable = (job?.runType === "spin" || job?.runType === "drive") && !!trigger?.active;
+      const tryThrough = (job?.job === "runner" && gainNow > 1.5 && this.can(p, "pass_through"))
+        || (runnable && gainNow > 3 && this.can(p, "pass_through"));
       const actions = tryThrough ? ["pass_through", currentDistance > 13 ? "pass_long" : "pass_short"]
         : [currentDistance > 13 ? "pass_long" : "pass_short"];
       let id: string | undefined;
@@ -378,59 +402,90 @@ export class AIController {
       const crowd = mates.filter((q) => q.idx !== mate.idx)
         .reduce((n, q) => n + Math.max(0, 3 - groundDistance(target, q.pos)) / 3, 0);
       const backward = gain < -1.5;
+      // Beating the last line is progression even if the pass itself is short.
+      const crossesLine = target.x * sign > lineU + 0.5 && gain > 1.5;
       const purpose: Option["purpose"] = backward && (mate.role === "GK" || job?.job === "pivot" || Math.abs(target.z) < T.pivotHalfWidth + 0.5)
-        ? "recycle" : id === "pass_through" ? "penetrate" : Math.abs(target.z - p.pos.z) > 6 && gain > -2 ? "switch" : "progress";
+        ? "recycle"
+        : id === "pass_through" || crossesLine ? "penetrate"
+          : Math.abs(target.z - p.pos.z) > 6 && gain > -2 ? "switch" : "progress";
       const safe = lane >= T.minSafeLane && space >= T.minSafeReceiverSpace;
       const key = `pass:${mate.idx}`;
       const returnPass = snap.lastPass?.receiver === p.idx && snap.lastPass.passer === mate.idx
         && snap.time - snap.lastPass.t < T.returnPassWindow;
-      let score = lane * 0.34 + THREE.MathUtils.clamp(space / 5, 0, 1) * 0.22
-        + THREE.MathUtils.clamp(gain / 12, -0.4, 1) * 0.21
-        + (purpose === "penetrate" && safe ? 0.2 : 0)
-        + (purpose === "switch" && safe ? 0.1 : 0)
+      let score = lane * weights.safety + THREE.MathUtils.clamp(space / 5, 0, 1) * 0.20
+        + THREE.MathUtils.clamp(gain / 12, -0.6, 1) * weights.gain
+        + (crossesLine && safe ? 0.16 : 0)
+        + (purpose === "penetrate" && safe ? 0.18 : 0)
+        + (purpose === "switch" && safe ? 0.10 : 0)
         - crowd * 0.17 - (space < 1.5 ? 0.35 : 0) - (lane < 0.35 ? 0.4 : 0)
         - novelty(key) * 0.35 + noise(0.16) + jitter(key);
-      if (Math.abs(gain) < 2 && Math.abs(target.z) < 4 && !pressed) score -= 0.18;
+      // Circulation with no threat: a square ball to a congested area costs more in
+      // transition, when we are meant to be attacking the other way.
+      if (Math.abs(gain) < 2 && Math.abs(target.z - p.pos.z) < 4 && !pressed) score -= weights.hazard * 0.9;
       if (returnPass && !pressed) score -= T.returnPassPenalty;
       if (clearChance) score -= 0.35;
-      options.push({ mate, target, id, key, lane, space, gain, score, purpose, safe });
+      options.push({ mate, target, id, key, lane, space, gain, score, purpose, safe, crossesLine });
     }
 
     const dribble = this.chooseDribbleLane(p, goalDir, field, mates,
       (v) => THREE.MathUtils.clamp(nearestSpace(v, field) / 5, 0, 1), noise, jitter, novelty);
     const carryLane = laneSafety(p.pos, dribble.target, field, CONFIG.player.runSpeed);
+    const forwardSpace = spaceAhead(p.pos, field, sign);
     const safeProgress = options.some((o) => o.gain > 2 && o.safe);
-    const needsReset = !safeProgress && (pressed || carryLane < 0.55) && !clearChance && !edgeChance;
+    // A reset is the emergency valve, not the default. Being merely "under pressure"
+    // (3.2 m) is not enough: turn back only when the carrier is actually smothered or
+    // the carry lane is shut.
+    const underRealPressure = pressure < T.pressureDistance * 0.7;
+    const needsReset = !safeProgress && (underRealPressure || carryLane < 0.4) && !clearChance && !edgeChance;
     for (const o of options) {
-      if (o.purpose === "recycle" && o.safe && needsReset) o.score += 0.7;
-      else if (o.safe && pressed) o.score += 0.17;
-      if (o.purpose === "recycle" && !needsReset) o.score -= 0.2;
+      if (o.purpose === "recycle" && o.safe && needsReset) o.score += 0.5;
+      else if (o.safe && pressed) o.score += 0.12;
+      // In transition, a forward option that is merely imperfect beats a safe square ball.
+      if (phase === "transition" && o.gain > 3 && o.lane > 0.3) o.score += 0.12;
+      if (o.purpose === "recycle" && !needsReset) o.score -= (phase === "build" ? 0.22 : 0.34);
       if (o.mate.role === "GK") o.score -= 0.05; // prefer a safe nearby pivot if both are available
     }
     options.sort((a, b) => b.score - a.score || jitter(a.key) - jitter(b.key));
     const best = options[0];
-    const carry = dribble.score - (pressed ? 0.25 : 0) - (needsReset ? 0.12 : 0);
-    const utilities = { shoot, pass: best?.score ?? -1, dribble: carry, shotLane, opening,
-      pressure, carryLane, reset: needsReset ? 1 : 0, passLane: best?.lane ?? 0 };
+    // Carrying into vacant space is progression too: value the ground ahead, not
+    // only the lane the ball is on right now.
+    // Carrying past a defender who is already on top of you is not "progression": it
+    // is the turnover the report describes. Value the space ahead only while there is
+    // room to actually use it.
+    const carry = dribble.score + forwardSpace * 0.14 + (trigger?.active ? 0.06 : 0)
+      - (pressed ? 0.25 : 0) - (needsReset ? 0.12 : 0)
+      - THREE.MathUtils.clamp((2.5 - pressure) / 2.5, 0, 1) * 0.45;
+    const utilities = { shoot, pass: best?.score ?? -1, dribble: carry, shotLane, opening, shotQuality: quality,
+      pressure, carryLane, forwardSpace, reset: needsReset ? 1 : 0, passLane: best?.lane ?? 0,
+      runTrigger: trigger?.active ? 1 : 0 };
     const passOptions = options.map((o) => ({ receiver: o.mate.idx, lane: o.lane, space: o.space, gain: o.gain, score: o.score, purpose: o.purpose }));
+    const runsOn = plan ? `${trigger?.active ? "RUNS ON" : "runs off"}${plan.assignments.size ? ` · ${[...plan.assignments.values()].filter((a) => a.runType === "spin" || a.runType === "drive").length} running` : ""}` : "no plan";
 
-    if (shotId && (clearChance || edgeChance || (inRange && shotLane > 0.55 && shoot > Math.max(best?.score ?? -1, carry)))) {
+    if (shotId && inRange && shotLane > T.shotPartialLane
+      && (clearChance || (edgeChance && quality > 0.14) || shoot > Math.max(best?.score ?? -1, carry) + 0.04)) {
       return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: shotId, actionTarget: aim, noveltyKey: shotKey,
-        reason: `SHOOT ${clearChance ? "clear chance" : "edge of area"}: ${distance.toFixed(1)}m, lane ${shotLane.toFixed(2)}, opening ${(opening * 180 / Math.PI).toFixed(0)}deg`,
+        reason: `SHOOT ${clearChance ? "clear chance" : edgeChance ? "edge of area" : "partial lane"}: ${distance.toFixed(1)}m, lane ${shotLane.toFixed(2)}, window ${(opening * 180 / Math.PI).toFixed(0)}deg, quality ${quality.toFixed(2)} · ${runsOn}`,
         utilities, passOptions, urgent: true };
     }
     if (best && best.score > Math.max(0.4, carry) && best.lane > 0.35) {
       return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: best.id, actionTarget: best.target,
         passTo: best.mate.idx, passPurpose: best.purpose, noveltyKey: best.key,
-        reason: `${best.purpose.toUpperCase()} -> #${best.mate.idx} ${best.mate.role}: lane ${best.lane.toFixed(2)}, space ${best.space.toFixed(1)}m, gain ${best.gain.toFixed(1)}m`,
-        utilities, passOptions, urgent: needsReset || best.purpose === "penetrate" };
+        reason: `${best.purpose.toUpperCase()} -> #${best.mate.idx} ${best.mate.role}: lane ${best.lane.toFixed(2)}, space ${best.space.toFixed(1)}m, gain ${best.gain.toFixed(1)}m${best.crossesLine ? ", line broken" : ""} · ${phase} · ${runsOn}`,
+        utilities, passOptions, urgent: needsReset || best.purpose === "penetrate" || phase === "transition" };
     }
     // When there is room, carrying into it has value. Do not manufacture square passes
     // to a congested centre just because a pass clip happens to be available.
     return { moveTarget: dribble.target, desiredSpeed: pressed ? CONFIG.player.runSpeed : CONFIG.player.hsrSpeed,
       action: null, noveltyKey: dribble.key,
-      reason: `${needsReset ? "ESCAPE" : "ADVANCE"} ${dribble.lane}: path ${carryLane.toFixed(2)}, space ${dribble.space.toFixed(2)}`,
+      reason: `${needsReset ? "ESCAPE" : "ADVANCE"} ${dribble.lane}: path ${carryLane.toFixed(2)}, space ${dribble.space.toFixed(2)}, ahead ${forwardSpace.toFixed(2)} · ${phase} · ${runsOn}`,
       utilities, passOptions, urgent: false };
+  }
+
+  /** Attacking-coordinate x of the opponents' second-last defender (the offside line). */
+  private defensiveLineU(snap: WorldSnap, team: number): number {
+    const sign = this.attackSign(team, snap.half);
+    const defenders = snap.players.filter((q) => q.team !== team).map((q) => q.pos.x * sign).sort((a, b) => b - a);
+    return defenders.length >= 2 ? defenders[1] : 0;
   }
 
   private goalkeeperDecision(

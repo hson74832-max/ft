@@ -132,6 +132,31 @@ export const CONFIG = {
     shotMinOpening: 0.16,
     returnPassWindow: 4.0,
     returnPassPenalty: 0.24,
+    // ---- Attacking intent -------------------------------------------------
+    // Possession won from the opponent opens a transition window in which passes
+    // and carries are scored for progression first (see CONFIG.tactics.phaseWeights).
+    transitionSeconds: 5.0,
+    // Off-ball run recognition. A run is only "triggered" when the carrier has the
+    // ball, is facing forward and is not under immediate pressure — otherwise the
+    // support players offer a short check instead of sprinting away.
+    runTriggerFacingDot: 0.25,
+    runTriggerTimeOnBall: 0.35,
+    runTriggerForwardLane: 0.45,
+    runCommitSeconds: 1.25,     // a started run is held this long before re-planning
+    runMinTravel: 3.2,          // m — a run target must be ahead of the player
+    spaceScanDepth: 7.0,        // m — how far ahead a player scans for vacant space
+    spaceScanHalfWidth: 4.0,    // m
+    spinLead: 7.5,              // m — depth of the run into the space behind the line
+    driveLead: 8.0,             // m — depth of a driving run into midfield space
+    checkDepth: 4.5,            // m — how short a player drops to offer an outlet
+    shotPartialLane: 0.28,      // a partially blocked lane is still a shot
+    phaseWeights: {
+      build: { gain: 0.26, safety: 0.34, hazard: 0.20 },
+      progress: { gain: 0.34, safety: 0.28, hazard: 0.20 },
+      finish: { gain: 0.26, safety: 0.22, hazard: 0.18 },
+      transition: { gain: 0.52, safety: 0.16, hazard: 0.26 },
+      recycle: { gain: 0.18, safety: 0.40, hazard: 0.22 },
+    } as Record<string, { gain: number; safety: number; hazard: number }>,
     runnerRolePreference: { FWD: 0, MID: 1.5, DEF: 4, GK: 50 } as Record<string, number>,
     pivotRolePreference: { DEF: 0, MID: 0.8, FWD: 4, GK: 50 } as Record<string, number>,
   },

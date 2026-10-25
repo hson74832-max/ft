@@ -11,6 +11,9 @@ const __dirname = path.dirname(__filename);
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
+  // The dev server is also used from a proxied preview host (sandbox/CI), so accept
+  // any Host header there. Production is a static bundle and never serves this config.
+  server: { host: true, port: 5199, allowedHosts: true },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
