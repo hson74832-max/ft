@@ -4,6 +4,7 @@ import { CONFIG, FORMATIONS } from "./config";
 import { clipExists } from "./anims";
 import { SeededRandom, streamSeed, tieBreakHash } from "./random";
 import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, spaceAhead, type RunType, type SupportJob } from "./tactics";
+import { believedPos, seesNow, type Perception } from "./match/perception";
 
 export interface PlayerStyle {
   directness: number;
@@ -95,6 +96,8 @@ export interface WorldPlayer {
   /** Duel state from the engine player (optional for standalone AI fixtures). */
   tackleRecoveryT?: number;
   tackleProtectionT?: number;
+  /** Field of view + short-term memory (absent for standalone AI fixtures). */
+  perception?: Perception;
 }
 
 export interface PassFlight {
@@ -390,7 +393,21 @@ export class AIController {
     }
 
     if (snap.ballOwner === null) {
-      const intercept = this.bestInterceptor(snap, p.team);
+      // A loose ball is chased from the last sighting. With the ball out of view the
+      // trajectory projection (which reads the true velocity) is not available, so a
+      // remembered ball is simply run at; a forgotten ball means recover the shape
+      // and let the next scan find it again.
+      const seesBall = seesNow(p, snap.ballPos, snap.time);
+      const believed = this.believedBall(p, snap);
+      if (!seesBall && !believed) {
+        const anchor = this.supportTarget(p, roleIdx, snap, snap.ballPos, atkSign);
+        return this.store(p.idx, {
+          moveTarget: this.applySpacing(anchor, p, mates, -1, atkSign), desiredSpeed: 3.6,
+          action: null, noveltyKey: "lost-ball-shape", reason: "Ball out of sight · recovering shape and scanning",
+          utilities: { shape: 0.62, memory: 0 }, urgent: false,
+        });
+      }
+      const intercept = seesBall ? this.bestInterceptor(snap, p.team) : null;
       if (intercept && intercept.idx === p.idx) {
         const predicted = this.projectBall(snap, intercept.time).pos;
         const dist = d(p.pos, predicted);
@@ -402,13 +419,14 @@ export class AIController {
           utilities: { intercept: 1, arrivalSlack: intercept.slack }, urgent: true,
         });
       }
-      const predicted = this.projectBall(snap, 0.7).pos;
+      const predicted = seesBall ? this.projectBall(snap, 0.7).pos : believed!;
       const anchor = this.supportTarget(p, roleIdx, snap, predicted, atkSign);
       const spaced = this.applySpacing(anchor, p, mates, -1, atkSign);
       if (CONFIG.ai.offside && p.role !== "DEF") this.clampOnside(spaced, snap.ballPos, p.team, snap);
       return this.store(p.idx, {
         moveTarget: spaced, desiredSpeed: p.role === "DEF" ? 3.6 : 4.2,
-        action: null, noveltyKey: "loose-shape", reason: `Recover shape toward projected ball · ${this.channelName(anchor.z)}`,
+        action: null, noveltyKey: "loose-shape",
+        reason: `${seesBall ? "Recover shape toward projected ball" : "Recover shape toward last seen ball"} · ${this.channelName(anchor.z)}`,
         utilities: { shape: 0.72, trajectory: 0.8 }, urgent: false,
       });
     }
@@ -442,7 +460,10 @@ export class AIController {
     if (p.role === "DEF" && centerThreat) {
       const isClosest = closestDef?.idx === p.idx;
       const toOwn = ownGoal.clone().sub(carrier.pos).setY(0).normalize();
-      const block = carrier.pos.clone().addScaledVector(toOwn, isClosest ? (shotThreat ? 2.2 : 2.8) : 3.9);
+      // Meet the run at a reachable point, then sit goal-side of it. Chasing the
+      // carrier's live position (or a lead point 0.2 s ahead of it) never closes the
+      // gap: the target travels exactly as fast as the defender does.
+      const block = this.interceptPoint(p, carrier).addScaledVector(toOwn, isClosest ? (shotThreat ? 2.2 : 2.8) : 3.9);
       // Both centre-backs pinch the centre; the covering one balances the far post.
       block.z = THREE.MathUtils.clamp(block.z, -5.4, 5.4) * (isClosest ? 0.35 : 0.16);
       block.z += isClosest ? 0 : (p.roleIdx === 1 ? -1.5 : 1.5);
@@ -469,7 +490,7 @@ export class AIController {
       // (he is ball-side of the carrier) cut back to the goal side instead of trailing
       // him — that is the run that ended up behind a winger at the touchline with the
       // centre open. A defender who is already goal-side presses straight at the ball.
-      const pressPoint = carrier.pos.clone().addScaledVector(carrier.vel, 0.2);
+      const pressPoint = this.interceptPoint(p, carrier);
       if ((p.pos.x - carrier.pos.x) * atkSign > 0.2) {
         const toOwn = ownGoal.clone().sub(carrier.pos).setY(0).normalize();
         pressPoint.addScaledVector(toOwn, p.role === "DEF" ? 1.2 : 0.5);
@@ -548,6 +569,28 @@ export class AIController {
     });
   }
 
+  /**
+   * Where this player believes `q` is: the live position while he can see him, the
+   * remembered position (led by the velocity he last saw) while the memory is fresh,
+   * or null once the sighting has decayed. Null means "not in my picture".
+   */
+  private perceived(p: WorldPlayer, q: WorldPlayer, now: number): WorldPlayer | null {
+    if (!p.perception) return q;
+    const point = believedPos(p, q.idx, q.pos, q.vel, now);
+    if (!point) return null;
+    return point.distanceToSquared(q.pos) < 1e-6 ? q : { ...q, pos: point };
+  }
+
+  /** Ball position the player believes in; null when he has no sighting left. */
+  private believedBall(p: WorldPlayer, snap: WorldSnap): THREE.Vector3 | null {
+    const per = p.perception;
+    if (!per) return snap.ballPos.clone();
+    if (seesNow(p, snap.ballPos, snap.time)) return snap.ballPos.clone();
+    if (!per.ball || snap.time - per.ball.t > CONFIG.ai.memorySeconds) return null;
+    const age = Math.min(snap.time - per.ball.t, 0.45);
+    return per.ball.pos.clone().addScaledVector(per.ball.vel, age * 0.5);
+  }
+
   private possessionDecision(
     p: WorldPlayer, snap: WorldSnap, noise: (scale?: number) => number,
     novelty: (key: string) => number, jitter: (key: string) => number,
@@ -556,7 +599,13 @@ export class AIController {
     const T = CONFIG.tactics;
     const sign = this.attackSign(p.team, snap.half);
     const goal = this.goalPos(p.team, snap.half);
-    const opponents = snap.players.filter((q) => q.team !== p.team);
+    // The carriers's picture of the pitch, not the engine's truth: an opponent he
+    // cannot see is either where he last saw him (memory) or not in the picture at
+    // all. Lane and space scores are therefore computed against what the carrier
+    // actually knows, so a blind lane really is blind.
+    const opponents = snap.players.filter((q) => q.team !== p.team)
+      .map((q) => this.perceived(p, q, snap.time))
+      .filter((q): q is WorldPlayer => q !== null);
     const field = opponents.filter((q) => q.role !== "GK");
     const mates = snap.players.filter((q) => q.team === p.team && q.idx !== p.idx);
     const plan = this.tactics.plan(snap, p.team);
@@ -609,11 +658,16 @@ export class AIController {
       crossBall: boolean };
     const options: Option[] = [];
     for (const mate of mates) {
-      if (this.isOffsidePosition(mate.pos, snap.ballPos, p.team, snap)) continue;
-      const currentDistance = groundDistance(snap.ballPos, mate.pos);
+      // Only a teammate the carrier can see — or still remembers from a recent
+      // sighting — is a real option. A man behind the carrier's back who has been
+      // forgotten does not exist as far as this decision is concerned.
+      const known = this.perceived(p, mate, snap.time);
+      if (!known) continue;
+      if (this.isOffsidePosition(known.pos, snap.ballPos, p.team, snap)) continue;
+      const currentDistance = groundDistance(snap.ballPos, known.pos);
       if (currentDistance < 2 || currentDistance > 27) continue;
       const job = plan?.assignments.get(mate.idx);
-      const gainNow = (mate.pos.x - p.pos.x) * sign;
+      const gainNow = (known.pos.x - p.pos.x) * sign;
       // A player making a run gets the through ball; a static option does not.
       const runnable = (job?.runType === "spin" || job?.runType === "drive") && !!trigger?.active;
       const tryThrough = (job?.job === "runner" && gainNow > 1.5 && this.can(p, "pass_through"))
@@ -621,7 +675,7 @@ export class AIController {
       const actions = tryThrough ? ["pass_through", currentDistance > 13 ? "pass_long" : "pass_short"]
         : [currentDistance > 13 ? "pass_long" : "pass_short"];
       let id: string | undefined;
-      let target = mate.pos.clone().addScaledVector(mate.vel, 0.35);
+      let target = known.pos.clone().addScaledVector(known.vel, 0.35);
       for (const action of actions) {
         if (!this.can(p, action)) continue;
         if (this.passPreview) {
@@ -640,7 +694,7 @@ export class AIController {
       const lane = laneSafety(snap.ballPos, target, field, id === "pass_long" ? 17 : 11);
       // Use both the current marker and predicted position: a marked player is not
       // "open" merely because constant-velocity extrapolation puts them in empty space.
-      const space = Math.min(nearestSpace(target, field), nearestSpace(mate.pos, field) + 0.8);
+      const space = Math.min(nearestSpace(target, field), nearestSpace(known.pos, field) + 0.8);
       const crowd = mates.filter((q) => q.idx !== mate.idx)
         .reduce((n, q) => n + Math.max(0, 3 - groundDistance(target, q.pos)) / 3, 0);
       const backward = gain < -1.5;
@@ -1088,6 +1142,25 @@ export class AIController {
    * box and pinches central (the corridor in front of goal is the most dangerous space).
    * When the ball is wide, the block slides across rather than leaving the centre open.
    */
+  /**
+   * Earliest point on the carrier's current path the defender can reach in time.
+   *
+   * Sprinting at the carrier's live position is a pursuit curve: the target moves
+   * as fast as the pursuer, so the gap never closes, the run bows out to the side
+   * and the defender arrives behind the play. Running at a point that is actually
+   * reachable — where the carrier will be, not where he is — is the straight line
+   * that cuts him off.
+   */
+  private interceptPoint(p: WorldPlayer, carrier: WorldPlayer): THREE.Vector3 {
+    // 0.9 accounts for the acceleration phase of the chase.
+    const reachable = CONFIG.ai.maxSprint * p.style.pressing * 0.9;
+    for (let t = 0.15; t <= 1.2 + 1e-6; t += 0.15) {
+      const point = carrier.pos.clone().addScaledVector(carrier.vel, t);
+      if (point.distanceTo(p.pos) <= reachable * t + 0.5) return point;
+    }
+    return carrier.pos.clone();
+  }
+
   private defensiveLineTarget(p: WorldPlayer, carrier: WorldPlayer, ownGoal: THREE.Vector3, attack: number): THREE.Vector3 {
     const ballU = carrier.pos.x * attack;          // own-goal-relative: -20 is our goal
     const ownLocal = ownGoal.x * attack;

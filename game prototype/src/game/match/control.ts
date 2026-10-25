@@ -6,7 +6,7 @@ import { tieBreakHash } from "../random";
 import { WorldPlayer, WorldSnap } from "../ai";
 import { onsideLimit } from "../tactics";
 import { _v1, _v2 } from "./scratch";
-import { powerForAction, startAction } from "./actions";
+import { isKickAction, kickFacingError, powerForAction, startAction } from "./actions";
 import { carrierIsProtected } from "./tackles";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
@@ -191,6 +191,7 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
     runSerial: p.runSerial, style: p.style, attributes: p.attributes,
     moveTarget: p.moveTarget, desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
     tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
+    perception: p.perception,
   };
   if (p.role === "GK" && e.ball.possessedBy === p.idx) {
     p.holdT += dt;
@@ -231,19 +232,36 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
       e.ai.nextThink.set(p.idx, e.clock + 0.1); // re-decide shortly; avoids RNG thrash every frame
     } else {
       const actionTarget = dec.action === "dribble_touch" ? undefined : (dec.actionTarget ?? dec.moveTarget).clone();
-      const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, undefined, powerForAction(p, dec.action));
-      if (ok) { p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec); }
-      else {
-        const cooldownRemaining = Math.max(
-          p.anim.cooldowns.get(dec.action) ?? 0,
-          dec.action.startsWith("tackle_") ? p.tackleRecoveryT : 0,
-        );
-        e.ai.nextThink.set(p.idx, e.clock + Math.max(0.05, cooldownRemaining)); // retry after cooldown decays
-        if (tr) tr.startActionResult = cooldownRemaining > 0
-          ? `skipped:recovery(${cooldownRemaining.toFixed(2)}s)`
-          : "skipped:clip-rejected";
+      // The kick leaves in the direction the body faces. A player who is running
+      // has his torso locked to his stride, so a target outside the body's arc is
+      // struck only after he stops and pivots onto it (faceTarget is read by the
+      // facing pass in ./frame). A player who is already standing still turns into
+      // the wind-up itself — that is the visible turn before the ball leaves.
+      if (dec.action && isKickAction(dec.action) && actionTarget && !p.restartTaker
+        && p.speed > 0.45
+        && kickFacingError(p, actionTarget) > CONFIG.ai.kickFacingAngle) {
+        p.faceTarget = actionTarget.clone();
+        p.faceTargetT = 1.0;
+        p.moveTarget.copy(p.pos);
+        p.desiredSpeed = Math.min(p.desiredSpeed, 1.2);
+        p.decisionReason = "Turn to face the kick target";
+        e.ai.nextThink.set(p.idx, e.clock + 0.06);
+        if (tr) tr.startActionResult = "skipped:turning-to-face";
+      } else {
+        const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, undefined, powerForAction(p, dec.action));
+        if (ok) { p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec); }
+        else {
+          const cooldownRemaining = Math.max(
+            p.anim.cooldowns.get(dec.action) ?? 0,
+            dec.action.startsWith("tackle_") ? p.tackleRecoveryT : 0,
+          );
+          e.ai.nextThink.set(p.idx, e.clock + Math.max(0.05, cooldownRemaining)); // retry after cooldown decays
+          if (tr) tr.startActionResult = cooldownRemaining > 0
+            ? `skipped:recovery(${cooldownRemaining.toFixed(2)}s)`
+            : "skipped:clip-rejected";
+        }
+        if (tr) tr.startActionResult = ok ? `ok:${dec.action}` : `rejected:${dec.action}(cooldown ${(p.anim.cooldowns.get(dec.action) ?? 0).toFixed(2)}s)`;
       }
-      if (tr) tr.startActionResult = ok ? `ok:${dec.action}` : `rejected:${dec.action}(cooldown ${(p.anim.cooldowns.get(dec.action) ?? 0).toFixed(2)}s)`;
     }
   } else {
     e.lastAppliedDecision.set(p.idx, dec);

@@ -10,6 +10,9 @@ import { _v1 } from "./scratch";
 import { startAction } from "./actions";
 import { aiEvent } from "./debug";
 import { keeperPositionTarget } from "../ai";
+import { yawOfVector } from "../angles";
+import { clearPerception, seedPerception } from "./perception";
+import { laneOpenness } from "./passPlanning";
 import { evaluateGkDistribution } from "./passPlanning";
 import { resetTackleState } from "./tackles";
 import type { EnginePlayer, GkDistribution, RestartTarget } from "./types";
@@ -33,6 +36,8 @@ export function resetPositions(e: MatchHost, kind: string) {
     p.facing = e.ai.attackSign(p.team, e.rules.half) > 0 ? 0 : Math.PI;
     p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
     p.holdT = 0; p.stumbleT = 0;
+    p.faceTarget = null; p.faceTargetT = 0;
+    clearPerception(p);
     resetTackleState(p);
     p.decisionReason = "reset"; p.utilities = {};
     p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
@@ -96,6 +101,7 @@ export function resetPositions(e: MatchHost, kind: string) {
   e.restartAutoT = 0.6;
   e.ai.resetDecisions();
   e.lastAppliedDecision.clear();
+  seedPerception(e);
 }
 
 /** Shape the pitch for the pending restart: taker, runners, defenders. */
@@ -146,6 +152,8 @@ export function placeForRestart(e: MatchHost) {
       p.vel.set(0, 0, 0);
       p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
       p.holdT = 0; p.stumbleT = 0;
+      p.faceTarget = null; p.faceTargetT = 0;
+      clearPerception(p);
       resetTackleState(p);
       p.decisionReason = "restart setup"; p.utilities = {};
       p.supportJob = undefined; p.supportRun = undefined; p.supportMode = undefined;
@@ -253,6 +261,47 @@ export function placeForRestart(e: MatchHost) {
           p.vel.set(0, 0, 0);
         });
       }
+      // The defending team drops into a block around the throw-in: the two nearest
+      // receivers are marked on the goal side, the rest screen the space between the
+      // ball and their own goal. Without this the side kept its attacking shape —
+      // forwards high and wide, nobody in the throw-in zone.
+      if (pr.kind === "throw_in") {
+        const defendTeam = 1 - pr.team;
+        const ownGoal = e.ai.ownGoal(defendTeam, e.rules.half);
+        const toOwn = ownGoal.clone().sub(e.ball.pos).setY(0);
+        if (toOwn.lengthSq() < 0.01) toOwn.set(-sign, 0, 0);
+        toOwn.normalize();
+        const across = new THREE.Vector3(-toOwn.z, 0, toOwn.x);
+        const clampToPitch = (v: THREE.Vector3) => {
+          v.x = THREE.MathUtils.clamp(v.x, -CONFIG.pitch.length / 2 + 0.8, CONFIG.pitch.length / 2 - 0.8);
+          v.z = THREE.MathUtils.clamp(v.z, -CONFIG.pitch.width / 2 + 0.6, CONFIG.pitch.width / 2 - 0.6);
+          return v;
+        };
+        const receiversInPlay = e.players
+          .filter((p) => p.team === pr.team && p.idx !== taker.idx && p.role !== "GK")
+          .sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos));
+        const blockers = e.players.filter((p) => p.team === defendTeam && p.role !== "GK")
+          .sort((a, b) => {
+            const roleRank = (p: EnginePlayer) => (p.role === "DEF" ? 0 : p.role === "MID" ? 1 : 2);
+            return roleRank(a) - roleRank(b)
+              || a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos)
+              || tieBreakHash(e.matchSeed, a.idx, a.runSerial, `throw-block:${pr.id}`)
+                - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `throw-block:${pr.id}`);
+          });
+        blockers.forEach((p, i) => {
+          const spot = i < 2 && receiversInPlay[i]
+            // Man-mark the two receivers from the goal side of them.
+            ? receiversInPlay[i].pos.clone().addScaledVector(toOwn, 1.4)
+            // Screen the corridor from the ball to goal, 4 m and 6 m deep.
+            : e.ball.pos.clone().addScaledVector(toOwn, 4.0 + (i >= 3 ? 2.0 : 0))
+              .addScaledVector(across, i % 2 === 0 ? -3.2 : 3.2);
+          p.pos.copy(clampToPitch(spot));
+          p.moveTarget.copy(p.pos);
+          p.vel.set(0, 0, 0);
+          _v1.copy(e.ball.pos).sub(p.pos);
+          if (_v1.length() > 0.3) p.facing = yawOfVector(_v1);
+        });
+      }
     }
     // Opponents respect the restart distance without collapsing into the taker's lane.
     for (const p of e.players) {
@@ -275,6 +324,9 @@ export function placeForRestart(e: MatchHost) {
     }
   }
   e.restartAutoT = 0.55;
+  // The dead-ball layout is visible to everyone: hand each player the picture he
+  // starts the restart with instead of an empty memory.
+  seedPerception(e);
 }
 
 /**
@@ -298,6 +350,42 @@ export function sampleRestartTarget(
       weight: 0.25 + Math.abs((keeper?.pos.z ?? 0) - z) * 0.55 + rng.range(0, 0.24),
     }));
     return { target: rng.weighted(lanes) };
+  }
+  if (pr.kind === "free_kick") {
+    // A free kick is a pass first and a long ball second. Options are scored on
+    // keeping the ball (an open lane and a receiver with room) with a bonus for a
+    // short ball; territory only decides it when the short options are marked. The
+    // action follows the chosen distance, so a 6 m option is struck as a short pass
+    // instead of a 24 m/s drive that bounces off the receiver's shins.
+    const opponents = e.players.filter((q) => q.team !== taker.team);
+    const field = opponents.filter((q) => q.role !== "GK");
+    const options = mates.map((m) => {
+      const target = m.pos.clone().addScaledVector(m.vel, 0.35);
+      const dist = target.distanceTo(taker.pos);
+      const lane = laneOpenness(e.ball.pos, target, opponents);
+      const space = field.length ? Math.min(...field.map((q) => q.pos.distanceTo(target)), 20) : 20;
+      const forward = (target.x - taker.pos.x) * sign;
+      const keepBall = THREE.MathUtils.clamp((18 - dist) / 14, 0, 1);
+      const score = lane * 0.5 + THREE.MathUtils.clamp(space / 6, 0, 1) * 0.24
+        + THREE.MathUtils.clamp(forward / 20, 0, 1) * 0.22
+        + keepBall * 0.28
+        - (dist > 26 ? 0.3 : 0)
+        + rng.range(0, 0.08) + m.style.creativity * 0.03;
+      return { player: m, target, dist, score };
+    }).filter((o) => o.dist > 3.5).sort((a, b) => b.score - a.score
+      || tieBreakHash(e.matchSeed, a.player.idx, a.player.runSerial, `fk:${pr.id}`)
+        - tieBreakHash(e.matchSeed, b.player.idx, b.player.runSerial, `fk:${pr.id}`));
+    if (options.length) {
+      const pool = options.slice(0, Math.min(3, options.length));
+      const chosen = rng.weighted(pool.map((item, i) => ({ value: item, weight: Math.max(0.08, item.score) * (i === 0 ? 1.1 : 0.8) })));
+      const target = chosen.target.clone();
+      if (chosen.dist > 22) target.x += sign * rng.range(1.5, 3.0);
+      // Short and medium deliveries stay on the ground and arrive at a pace a
+      // receiver can cushion (pass_short / pass_through); only a genuine long ball
+      // uses the driven pass_long profile.
+      const action = chosen.dist <= 14 ? "pass_short" : chosen.dist <= 22 ? "pass_through" : "pass_long";
+      return { target, player: chosen.player, action };
+    }
   }
   if (pr.kind === "kickoff") {
     // At kickoff, passer cleanly finds the supporting teammate on the kickoff circle
@@ -447,6 +535,13 @@ export function restartAuto(e: MatchHost, dt: number) {
   const attemptKey = `restart:${pr.id}:${e.restartRetries}:${taker.idx}`;
   const attemptRng = new SeededRandom(streamSeed(e.matchSeed, attemptKey));
   if (!selection) selection = sampleRestartTarget(e, pr, taker, attemptRng);
+  // The sampled free-kick delivery decides short / medium / long; anything else
+  // keeps the kind's default action.
+  if (pr.kind === "free_kick" && selection.action) action = selection.action;
+  // The taker is standing over the ball: line the body up with the delivery before
+  // it is struck (set-piece takers are exempt from the open-play facing gate).
+  _v1.copy(selection.target).sub(taker.pos);
+  if (_v1.length() > 0.3) taker.facing = yawOfVector(_v1);
   const seed = streamSeed(e.matchSeed, `${attemptKey}:action`);
   if (startAction(e, taker, action, selection.target, selection.player?.idx, seed)) {
     e.restartStartedId = pr.id;
