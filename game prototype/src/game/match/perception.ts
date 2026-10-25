@@ -140,7 +140,10 @@ export function updatePerception(e: MatchHost, dt: number) {
       if (per.scanT <= 0) {
         per.scanUntil = now + CONFIG.ai.scanDuration;
         per.scanSide = -per.scanSide;
-        per.scanT = CONFIG.ai.scanInterval
+        // Scanning: a player who checks his surroundings often has a shorter gap
+        // between sweeps (and a fresher picture of where everyone is).
+        const scanning = p.attributes?.intelligence.scanning ?? 75;
+        per.scanT = CONFIG.ai.scanInterval * (1.35 - scanning / 150)
           * (0.75 + tieBreakHash(e.matchSeed, p.idx, p.runSerial, "scan") * 0.5);
       }
     }

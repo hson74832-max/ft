@@ -506,7 +506,18 @@ export class AnimationController {
           ? (this.actionId === "tackle_slide" ? CONFIG.tackle.slideCooldown : CONFIG.tackle.standCooldown)
           : meta.category === "shoot" ? 0.8 : 0.5);
       }
-      if (!meta.loop && this.actionT >= this.actionDur) {
+      // A looping control clip (the arm-out shield) is a *held* state, not an
+      // action: it must end when the hold is released, otherwise `busy` stays true
+      // forever and every later kick request is rejected as "already animating".
+      if (meta.loop && this.actionId === "shield" && !opts.shielding) {
+        this.actionId = null;
+        this.actionMeta = null;
+        this.actionMotion = undefined;
+        this.state = "locomotion";
+        this.blend = 0;
+        this.prevPose = pose;
+        pose = locomotionPose({ speed: this.locoSpeed, dirAngle: this.dirAngle, phase: this.locoPhase, fatigue: this.fatigue, jockey: this.jockey });
+      } else if (!meta.loop && this.actionT >= this.actionDur) {
         this.actionId = null;
         this.actionMeta = null;
         this.actionMotion = undefined;

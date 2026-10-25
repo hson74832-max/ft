@@ -39,6 +39,35 @@ export function trackPossession(e: MatchHost) {
 export function possessionCheck(e: MatchHost) {
   if (e.ball.possessedBy !== null) {
     const o = e.players[e.ball.possessedBy];
+    // ---- Goalkeeper hands at a dribbler's feet ------------------------------
+    // A keeper does not challenge a carrier in his own box with a foot: he
+    // smothers the ball with his gloves. Without this the carrier's body simply
+    // owned the ball inside the six-yard area and the keeper could never take it.
+    if (o.role !== "GK") {
+      const gk = e.players.find((q) => q.role === "GK" && q.team !== o.team);
+      if (gk) {
+        const ownGoal = e.ai.ownGoal(gk.team, e.rules.half);
+        const inOwnBox = Math.abs(gk.pos.x - ownGoal.x) < 5.8 && Math.abs(gk.pos.z) < 6.2;
+        const ballToGk = gk.pos.distanceTo(e.ball.pos);
+        const handsRange = CONFIG.ai.gkSmotherRange * (0.85 + gk.attributes.goalkeeping.reach / 500);
+        // Give the keeper a beat to react to the first touch, and never steal a
+        // ball that was just won in a tackle (that carrier is protected).
+        const reacted = e.clock - e.possessionStartedAt > 0.25;
+        if (reacted && inOwnBox && e.ball.pos.y < CONFIG.ai.gkSmotherHeight
+          && ballToGk < handsRange && ballToGk < gk.pos.distanceTo(o.pos)
+          && o.tackleProtectionT <= 0 && gk.stumbleT <= 0
+          && e.ball.handsRestrictedTeam !== gk.team) {
+          e.ball.possess(gk.idx, gk.team);
+          e.ball.vel.set(0, 0, 0);
+          gk.holdT = 0;
+          startAction(e, gk, "gk_catch");
+          e.offsideCandidates.clear(); e.offsideTeam = null;
+          aiEvent(e, `GK SMOTHER #${gk.idx} · hands on #${o.idx}'s feet at ${ballToGk.toFixed(2)}m`);
+          e.rules.emit("SAVE", `GK SMOTHER by ${gk.team === 0 ? "RED" : "BLUE"} — hands on the ball`, gk.team);
+          return;
+        }
+      }
+    }
     // Auto-switch only on a possession change; a manual [X] switch stays under the user's control.
     if (o.idx !== e.lastKnownOwnerIdx) {
       if (!e.spectator && o.team === e.humanTeam) setHumanPlayer(e, o);

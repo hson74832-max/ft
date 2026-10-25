@@ -3,10 +3,18 @@
 //  2. keepers passive in 1v1s (never close the angle / use hands on a carrier),
 //  3. defenders panic-clearing with no immediate danger,
 //  4. AI repeating the same pass in a stable loop,
-//  5. corner taker not the player actually nearest the flag when the ball went out.
+//  5. corner taker not the player actually nearest the flag when the ball went out,
+//  6. locomotion that only knew walk-or-sprint, with no burst off the mark and no
+//     planted turn,
+//  7. body orientation welded to the stride: no shield, no side-step, every kick
+//     struck with the right foot,
+//  8. keepers who did not use their hands on a grounded ball at a dribbler's feet,
+//  9. intelligence and mentality attributes that changed no decision, position or
+//     effort.
 // Runs the REAL engine headless plus direct AI decisions, like tactics-test.
 import { headlessEngineCanvas } from "./harness";   // installs the headless DOM shim on import
 import * as THREE from "three";
+import { yawDelta, yawOf } from "../src/game/angles";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -280,8 +288,9 @@ async function main() {
     const fwd = ai.sampleAttributes("FWD", 4);
     const gk = ai.sampleAttributes("GK", 0);
     const ratings = [def, fwd, gk].flatMap((a) => Object.values(a).flatMap((group) => Object.values(group)));
+    // 43 technical/physical/keeper ratings + 8 intelligence + 10 mentality.
     check("player attributes cover every group with valid 1–99 ratings",
-      ratings.length === 3 * 43 && ratings.every((rating) => Number.isFinite(rating) && rating >= 1 && rating <= 99),
+      ratings.length === 3 * 61 && ratings.every((rating) => Number.isFinite(rating) && rating >= 1 && rating <= 99),
       `${ratings.length} ratings`);
     check("role profiles make defenders, forwards and keepers fundamentally different",
       def.defending.standingTackle > fwd.defending.standingTackle + 25
@@ -403,6 +412,175 @@ async function main() {
       sawCatch && engine.ball.possessedBy === keeper.idx,
       `sawCatch=${sawCatch} owner=${engine.ball.possessedBy}`);
     engine.dispose();
+  }
+
+  // ================= 5b. A dribbler inside the box is smothered by the keeper ========
+  {
+    for (const seed of [131, 132]) {
+      mute();
+      const engine = makeEngine(seed);
+      engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+      for (const p of engine.players) { p.pos.set(10, 0, 20 - p.idx); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); }
+      const striker = engine.players.find((p) => p.team === 1 && p.role === "FWD")!;
+      const keeper = engine.players.find((p) => p.team === 0 && p.role === "GK")!;
+      keeper.pos.set(-19.2, 0, 0); keeper.moveTarget.copy(keeper.pos); keeper.facing = 0;
+      striker.pos.set(-12, 0, 1.5); striker.moveTarget.copy(striker.pos); striker.facing = Math.PI;
+      engine.ball.possess(striker.idx, 1);
+      engine.ball.glueTo(striker.pos, striker.facing, striker.vel);
+      engine.humanIdx = striker.idx; engine.humanTeam = 1; engine.spectator = false;
+      engine.keys.add("a");                       // the striker dribbles straight at goal
+      let claimedAt = -1;
+      for (let f = 0; f < 60 * 3; f++) {
+        engine.step(1 / 60);
+        if (engine.ball.possessedBy === keeper.idx) { claimedAt = f; break; }
+        if (engine.rules.phase === "GOAL") break;
+      }
+      unmute();
+      check("a keeper rushes out and takes the ball off a dribbler inside his own box",
+        claimedAt >= 0 && engine.rules.phase !== "GOAL" && keeper.anim.actionId === "gk_catch",
+        `claimed at ${claimedAt >= 0 ? (claimedAt / 60).toFixed(2) + "s" : "never"}, phase ${engine.rules.phase}, action ${keeper.anim.actionId}`);
+      engine.dispose();
+    }
+  }
+
+  // ================= 6. Movement feel: explosive first step, planted turns =================
+  // The harness fixture parks everyone 18 m away and gives the ball to the human, so
+  // only his own locomotion is measured.
+  const movementFixture = (seed: number) => {
+    const engine = makeEngine(seed);
+    engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+    for (const p of engine.players) { p.pos.set(-18, 0, (p.idx - 6) * 0.5); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); }
+    const human = engine.players[4];
+    human.pos.set(0, 0, 0); human.moveTarget.copy(human.pos); human.vel.set(0, 0, 0); human.facing = 0;
+    engine.humanIdx = human.idx; engine.humanTeam = 0; engine.spectator = false;
+    engine.ball.possess(human.idx, 0);
+    return { engine, human };
+  };
+  {
+    mute();
+    const { engine, human } = movementFixture(120);
+    engine.keys.add("d");
+    const speeds: number[] = [];
+    for (let f = 0; f < 120; f++) { engine.step(1 / 60); speeds.push(human.speed); }
+    const runTop = human.speed;
+    unmute();
+    check("a run starts from a standstill instead of snapping to top speed",
+      speeds[0] < 0.4 && speeds[8] > 0.9 && speeds[8] < CONFIG.player.runSpeed,
+      `first frame ${speeds[0].toFixed(2)} m/s, 0.15 s ${speeds[8].toFixed(2)} m/s`);
+    check("acceleration is explosive off the mark: half of jog speed inside 0.25 s",
+      speeds[14] > CONFIG.player.runSpeed * 0.35 && runTop > CONFIG.player.runSpeed * 0.92,
+      `0.25 s ${speeds[14].toFixed(2)} m/s, top ${runTop.toFixed(2)} m/s`);
+    engine.dispose();
+  }
+  {
+    mute();
+    const { engine, human } = movementFixture(121);
+    engine.keys.add("d"); engine.keys.add("shift");
+    for (let f = 0; f < 120; f++) engine.step(1 / 60);
+    const sprintTop = human.speed;
+    unmute();
+    check("sprint reaches a genuinely higher top speed than a jog", sprintTop > CONFIG.player.runSpeed * 1.2,
+      `sprint ${sprintTop.toFixed(2)} m/s vs jog ${CONFIG.player.runSpeed} m/s`);
+    engine.dispose();
+  }
+  {
+    mute();
+    const { engine, human } = movementFixture(122);
+    engine.keys.add("d");
+    for (let f = 0; f < 90; f++) engine.step(1 / 60);
+    const before = human.speed;
+    engine.keys.delete("d"); engine.keys.add("a");
+    const after: number[] = [];
+    for (let f = 0; f < 110; f++) { engine.step(1 / 60); after.push(human.speed); }
+    const planted = Math.min(...after);
+    unmute();
+    check("a full reversal plants the foot instead of flipping the velocity in one frame",
+      before > 3.5 && after[0] > before * 0.85 && planted < 1 && human.vel.x < -3,
+      `before ${before.toFixed(2)} m/s, first frame ${after[0].toFixed(2)} m/s, planted at ${planted.toFixed(2)} m/s, ended vx ${human.vel.x.toFixed(2)}`);
+    engine.dispose();
+  }
+  {
+    mute();
+    const { engine, human } = movementFixture(123);
+    engine.keys.add("d");
+    for (let f = 0; f < 90; f++) engine.step(1 / 60);
+    const before = human.speed;
+    engine.keys.delete("d"); engine.keys.add("s");
+    for (let f = 0; f < 40; f++) engine.step(1 / 60);
+    const cutSpeed = human.speed;
+    unmute();
+    check("a 90° cut costs speed before the new direction is taken up",
+      cutSpeed < before * 0.85 && Math.abs(human.vel.z) > 1.5 && Math.abs(human.vel.x) > 1,
+      `before ${before.toFixed(2)} m/s, after the cut ${cutSpeed.toFixed(2)} m/s, vel (${human.vel.x.toFixed(2)}, ${human.vel.z.toFixed(2)})`);
+    engine.dispose();
+  }
+
+  // ================= 7. Body orientation: shield, side-step, correct foot =================
+  {
+    mute();
+    const { engine, human } = movementFixture(124);
+    const opp = engine.players[9];
+    opp.pos.set(0, 0, -2); opp.moveTarget.copy(opp.pos); opp.vel.set(0, 0, 0); opp.facing = Math.PI;
+    engine.keys.add("d");
+    for (let f = 0; f < 90; f++) engine.step(1 / 60);
+    const openSpeed = human.speed;
+    const { engine: shieldEngine, human: shieldHuman } = movementFixture(124);
+    const marker = shieldEngine.players[9];
+    marker.pos.set(0, 0, -2); marker.moveTarget.copy(marker.pos); marker.vel.set(0, 0, 0); marker.facing = Math.PI;
+    shieldEngine.keys.add("f"); shieldEngine.keys.add("d");
+    for (let f = 0; f < 18; f++) shieldEngine.step(1 / 60);
+    const shielded = shieldHuman.shielding;
+    const facingAway = yawOf(0, 1);
+    const shieldTurn = Math.abs(yawDelta(shieldHuman.facing, facingAway));
+    unmute();
+    check("holding shield puts the body between the ball and the nearest opponent",
+      shielded && shieldTurn < 0.45 && shieldHuman.vel.x > 1.5,
+      `shielding=${shielded} facing error ${(shieldTurn * 180 / Math.PI).toFixed(0)}° while moving x ${shieldHuman.vel.x.toFixed(2)}`);
+    check("shielding costs speed, so side-stepping is a choice and not free",
+      shieldHuman.speed < openSpeed * 0.8,
+      `shielded ${shieldHuman.speed.toFixed(2)} m/s vs open ${openSpeed.toFixed(2)} m/s`);
+    engine.dispose();
+    shieldEngine.dispose();
+  }
+  {
+    mute();
+    const { engine, human } = movementFixture(125);
+    engine.keys.add("s");   // straight back down the pitch, ball at his feet
+    for (let f = 0; f < 60; f++) engine.step(1 / 60);
+    const goalYaw = Math.atan2(-(0 - human.pos.z), (CONFIG.pitch.length / 2 + 4) - human.pos.x);
+    const openTurn = Math.abs(yawDelta(human.facing, goalYaw));
+    const moving = human.vel.z;
+    unmute();
+    check("running across the pitch the hips stay open to goal instead of following the stride",
+      openTurn < 0.4 && moving > 1.5,
+      `facing error ${(openTurn * 180 / Math.PI).toFixed(0)}°, lateral speed ${moving.toFixed(2)} m/s`);
+    engine.dispose();
+  }
+  {
+    mute();
+    const kickFixture = (targetZ: number) => {
+      const engine = makeEngine(126);
+      engine.rules.phase = "INPLAY"; engine.rules.pendingRestart = null;
+      // Everyone else is parked upfield of the passer, so the receiver is onside and a
+      // 45° target is a legal delivery instead of an offside or behind-the-back kick.
+      for (const p of engine.players) { p.pos.set(9, 0, (p.idx - 6) * 0.5); p.moveTarget.copy(p.pos); p.vel.set(0, 0, 0); p.facing = 0; }
+      const passer = engine.players[4];
+      passer.pos.set(0, 0, 0); passer.moveTarget.copy(passer.pos); passer.facing = 0;
+      const mate = engine.players[3];
+      mate.pos.set(6, 0, targetZ * 1); mate.moveTarget.copy(mate.pos);
+      engine.ball.possess(passer.idx, 0);
+      engine.ball.glueTo(passer.pos, passer.facing, passer.vel);
+      const started = startAction(engine, passer, "pass_short", mate.pos.clone());
+      const strike = passer.strikeFoot;
+      engine.dispose();
+      return { strike, started };
+    };
+    const toLeft = kickFixture(-6);
+    const toRight = kickFixture(6);
+    unmute();
+    check("a kick is struck with the foot on the target's side of the body",
+      toLeft.strike === "L" && toRight.strike === "R" && toLeft.started && toRight.started,
+      `target left → ${toLeft.strike}, target right → ${toRight.strike}`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)` : "\nALL PASS");

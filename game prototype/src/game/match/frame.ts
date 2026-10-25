@@ -36,6 +36,8 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
     ballKickAge: e.ball.kickAge,
     ownerSince: e.possessionStartedAt,
     transitionUntil: e.transitionTeam === e.ball.ownerTeam ? e.transitionUntil : 0,
+    // The scoreline is part of the picture: effort and body language respond to it.
+    score: [e.rules.score[0], e.rules.score[1]],
     passFlight: e.passFlight, lastPass: e.lastPass,
   };
 
@@ -135,16 +137,26 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       const sp = Math.hypot(p.vel.x, p.vel.z);
       const dLen = desired.length();
       const dot = sp > 0.05 && dLen > 0.05 ? (p.vel.x * desired.x + p.vel.z * desired.z) / (sp * dLen) : 1;
-      if (dot < -0.2 && sp > 0.4) {
-        // plant-and-cut: bleeding current momentum before committing to the new direction
+      // How square the turn is, 0 = straight on, 1 = a full reversal.
+      const cut = THREE.MathUtils.clamp((1 - dot) / 2, 0, 1);
+      if (dot < -0.2 && sp > CONFIG.player.cutPlantSpeed) {
+        // plant-and-cut: a square turn is not carved out of the run — the foot goes in
+        // first and the current momentum is bled off before the new direction starts.
         const bleed = Math.min(sp, deceleration * dt);
         p.vel.x -= (p.vel.x / sp) * bleed;
         p.vel.z -= (p.vel.z / sp) * bleed;
       } else if (dLen > 1e-4) {
-        const rate = dLen > sp ? acceleration : deceleration;
-        const stepN = Math.min(dLen, rate * dt);
-        p.vel.x += (desired.x - p.vel.x) / dLen * stepN;
-        p.vel.z += (desired.z - p.vel.z) / dLen * stepN;
+        // Analog force curve: the first step out of a standstill is explosive, and a
+        // square cut costs acceleration because the foot has to plant before the body
+        // pushes off again. The velocity is stepped at the full rate; scaling the step
+        // by the remaining gap made acceleration decay with the gap, so the first
+        // stride crawled and every small correction drifted into place.
+        const burst = sp < CONFIG.player.accelBurstSpeed ? CONFIG.player.accelBurst : 1;
+        const plant = 1 - CONFIG.player.cutAccelPenalty * cut;
+        const rate = (dLen > sp ? acceleration * burst * plant : deceleration);
+        _v1.copy(desired).sub(p.vel);
+        const gap = _v1.length();
+        if (gap > 1e-5) p.vel.addScaledVector(_v1.multiplyScalar(1 / gap), Math.min(gap, rate * dt));
       } else if (sp > 0.05) {
         // no input: brake to a stop at the measured decel rate
         const bleed = Math.min(sp, deceleration * dt);
@@ -159,7 +171,9 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     const speedRating = e.ball.possessedBy === p.idx
       ? (p.attributes.physical.sprintSpeed + p.attributes.ballControl.runningPossession) / 2
       : p.attributes.physical.sprintSpeed;
-    const maxSp = baseCap * THREE.MathUtils.clamp(0.5 + speedRating / 150, 0.8, 1.15) * (0.72 + 0.28 * p.stamina);
+    const contextCap = p.shielding ? CONFIG.player.shieldSpeedFactor
+      : p.strideFacing ? CONFIG.player.strafeSpeedFactor : 1;
+    const maxSp = baseCap * contextCap * THREE.MathUtils.clamp(0.5 + speedRating / 150, 0.8, 1.15) * (0.72 + 0.28 * p.stamina);
     if (p.vel.length() > maxSp) p.vel.setLength(maxSp);
     p.pos.addScaledVector(p.vel, dt);
     // walls clamp — restart takers may legally stand outside the field of play
@@ -183,6 +197,15 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       // direction while the clip plays, so the strike is never "behind the back".
       _v1.copy(p.pendingKick.target).sub(p.pos);
       if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);
+    } else if (p.shielding && e.ball.possessedBy === p.idx) {
+      // Shielding: the body stays between the ball and the nearest opponent while the
+      // feet work sideways or backwards — the player no longer turns his back to the
+      // pressure just because he is moving that way.
+      _v1.copy(p.shieldPoint).sub(p.pos);
+      if (_v1.length() > 0.3) wantFacing = yawOfVector(_v1);
+    } else if (p.strideFacing && p.speed > 0.4) {
+      // Side-step / backpedal: the hips keep their angle, the legs travel across it.
+      wantFacing = p.strideFacing;
     } else if (p.speed > 0.4) wantFacing = yawOfVector(p.vel);
     else if (e.ball.possessedBy !== p.idx) {
       _v1.copy(e.ball.pos).sub(p.pos);
@@ -226,7 +249,7 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     const scanYaw = scanHeadYaw(p.perception, e.clock);
     const ballLocal = scanYaw !== 0 ? scanYaw
       : yawDelta(p.facing, yawOfVector(_v1.copy(e.ball.pos).sub(p.pos)));
-    const au = p.anim.update(dt, p.speed, dAng, { shielding: p.pendingKick !== null, ballDirLocal: ballLocal });
+    const au = p.anim.update(dt, p.speed, dAng, { shielding: p.shielding, ballDirLocal: ballLocal });
     // root motion add
     if (au.rootDelta.dx || au.rootDelta.dz || au.rootDelta.dYaw) {
       const fw = p.facing;

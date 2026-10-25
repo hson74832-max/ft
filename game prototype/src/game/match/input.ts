@@ -3,7 +3,11 @@ import type { MatchHost } from "./host";
 
 /** One keyboard event: track held keys, then act on the one-shot bindings. */
 export function handleKey(e: MatchHost, ev: KeyboardEvent, down: boolean) {
-  const k = ev.key.toLowerCase();
+  // The pass charge reads the space key. `KeyboardEvent.key` is " " for a space
+  // bar on most layouts but "Spacebar" on some older ones, so the physical
+  // `code` is used when it is available: a missed space release also left
+  // `chargingPass` stuck on and the charge meter pinned.
+  const k = ev.code === "Space" ? " " : ev.key.toLowerCase();
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "tab"].includes(k === " " ? " " : k) || k === "tab") ev.preventDefault();
   if (down) e.keys.add(k); else e.keys.delete(k);
   if (!down) return;

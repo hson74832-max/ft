@@ -65,8 +65,6 @@ export interface MatchHost {
   shootCharge: number;
   chargingPass: boolean;
   chargingShoot: boolean;
-  /** Analog touch virtual joystick (set by the UI, read by humanControl each frame). */
-  touchStick: { ix: number; iz: number; active: boolean };
 
   // --- telemetry / logs -----------------------------------------------------
   contactTotal: number;

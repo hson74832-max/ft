@@ -13,9 +13,11 @@ interface Props {
   panel: Panel;
   onClose: () => void;
   engine: () => MatchEngine | null;
+  showFps: boolean;
+  onShowFps: (show: boolean) => void;
 }
 
-export function PanelModal({ panel, onClose, engine }: Props) {
+export function PanelModal({ panel, onClose, engine, showFps, onShowFps }: Props) {
   const titles: Record<Panel, string> = {
     design: "Design / Architecture", contact: "Pose Contact Sheet", teams: "Team Selection", controls: "Controls",
     settings: "Settings & AI Tuning", motion: "Motion Lab", readme: "Rulebook & README",
@@ -33,7 +35,7 @@ export function PanelModal({ panel, onClose, engine }: Props) {
         <div className="min-h-0 flex-1 overflow-y-auto p-5 text-[12px] leading-relaxed text-zinc-300">
           {panel === "teams" && <Teams />}
           {panel === "controls" && <Controls />}
-          {panel === "settings" && <Settings engine={engine} />}
+          {panel === "settings" && <Settings engine={engine} showFps={showFps} onShowFps={onShowFps} />}
           {panel === "motion" && <MotionLab engine={engine} />}
           {panel === "design" && <Design />}
           {panel === "contact" && <ContactSheet />}
@@ -103,7 +105,7 @@ function Controls() {
   );
 }
 
-function Settings({ engine }: { engine: () => MatchEngine | null }) {
+function Settings({ engine, showFps, onShowFps }: { engine: () => MatchEngine | null; showFps: boolean; onShowFps: (show: boolean) => void }) {
   const [, tick] = useState(0);
   const ai = CONFIG.ai as unknown as Record<string, number>;
   const e = engine();
@@ -130,6 +132,10 @@ function Settings({ engine }: { engine: () => MatchEngine | null }) {
         <ToggleRow label="AI target-line overlay" value={!!e?.showAIDebug} disabled={!e} onChange={() => { if (e) { e.showAIDebug = !e.showAIDebug; tick((x) => x + 1); } }} />
         <ToggleRow label="Animation overlay (H)" value={!!e?.showAnimOverlay} disabled={!e} onChange={() => { if (e) { e.showAnimOverlay = !e.showAnimOverlay; tick((x) => x + 1); } }} />
         <ToggleRow label="Camera: broadcast" value={(e?.cameraMode ?? "broadcast") === "broadcast"} disabled={!e} onChange={() => { if (e) { e.cameraMode = e.cameraMode === "broadcast" ? "follow" : "broadcast"; tick((x) => x + 1); } }} />
+      </div>
+      <div>
+        <SectionLabel>Display</SectionLabel>
+        <ToggleRow label="FPS counter (top left)" value={showFps} onChange={() => onShowFps(!showFps)} />
       </div>
       <div>
         <SectionLabel>Match</SectionLabel>

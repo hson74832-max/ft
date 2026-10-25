@@ -87,7 +87,6 @@ export class MatchEngine {
   keys = new Set<string>();
   passCharge = 0; shootCharge = 0;
   chargingPass = false; chargingShoot = false;
-  touchStick = { ix: 0, iz: 0, active: false };
   camPos = new THREE.Vector3(0, 17, 23);
   camLook = new THREE.Vector3();
   freeYaw = 0.6; freePitch = 0.7; freeDist = 30;
@@ -162,9 +161,11 @@ export class MatchEngine {
     buildWorld(this);
     this.ball = new Ball(this.scene);
     buildPlayers(this);
-    // FIFA-style selection marker above the human-controlled player's head.
-    const markerGeo = new THREE.ConeGeometry(0.45, 0.9, 3);
-    const markerMat = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.9 });
+    // FIFA-style selection marker: a small chevron that floats clear of the head
+    // mesh. The old cone (r 0.45 / h 0.9, hung at head height) was as wide as the
+    // player's shoulders and clipped through the skull.
+    const markerGeo = new THREE.ConeGeometry(0.24, 0.42, 3);
+    const markerMat = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.85 });
     this.selectionMarker = new THREE.Mesh(markerGeo, markerMat);
     this.selectionMarker.visible = false;
     this.scene.add(this.selectionMarker);
@@ -278,7 +279,7 @@ export class MatchEngine {
     if (this.selectionMarker) {
       const human = this.players[this.humanIdx];
       if (!this.spectator && human) {
-        this.selectionMarker.position.set(human.pos.x, human.pos.y + 1.7, human.pos.z);
+        this.selectionMarker.position.set(human.pos.x, human.pos.y + 2.45, human.pos.z);
         this.selectionMarker.visible = true;
       } else {
         this.selectionMarker.visible = false;
