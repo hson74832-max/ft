@@ -79,7 +79,7 @@ Open the menu, then:
 
 ## Behaviour variety
 
-A single match seed (recorded in match state) drives one PRNG for AI decisions and sampled restart targets. Contact resolution never reads it. Each player gets style weights sampled once per match. Utility choices carry a novelty penalty and stable per-player/per-run tie-break hashes, so equal states don't always resolve by iteration order. Action seeds are recorded in the debug drawer.
+A single match seed (recorded in match state) derives independent streams per domain — match, coin toss, per-player AI decisions and styles, restart attempts — so the seed flavours noise and attributes without one global draw order deciding the match. Contact resolution never reads any of them. Each player gets style weights sampled once per match from his own stream, and each side gets a team mentality (directness, pressing) hashed from the seed that tilts the collective pass-scoring weights and press intensity in `TeamTactics`. Carriers score every option (pass completion × progression − turnover risk, shot quality, carry space − pressure/stamina) and sample probabilistically among near-best passes; a novelty penalty, an uncapped repeat streak and cancelled-kick memory keep the same choice from cycling forever. Action seeds are recorded in the debug drawer.
 
 ## FieldMotion v2 import
 
@@ -122,7 +122,7 @@ src/game/
   skeleton.ts    bone construction + contract validation
   anims.ts       2D locomotion blend space, actions, crossfade, IK snap, root motion
   motion.ts      FieldMotion v2 parser/sampler + registry
-  playerMesh.ts  procedural Blocky / Roundy rigs, seeded variants, stress test
+  playerMesh.ts  procedural Blocky rigs, seeded variants, stress test
   ball.ts        pure real-physics step/kick functions + Ball wrapper (single source of truth)
   rules.ts       match phases, halves, score, typed rule events
   ai.ts          spatial utilities, marking, offside, keeper AI, seeded style

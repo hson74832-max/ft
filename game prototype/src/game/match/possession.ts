@@ -116,8 +116,32 @@ export function outGoalCheck(e: MatchHost) {
   const touchTeam = e.ball.lastTouchTeam
     ?? (e.ball.lastTouch !== null ? e.players[e.ball.lastTouch]?.team : undefined)
     ?? e.lastKnownOwnerTeam;
-  // The whole ball must cross the line, stay inside the net volume, fit between posts and under the bar.
-  if (Math.abs(b.z) + R < GW && b.y + R < GH) {
+  // The whole ball must cross the line between the posts and under the bar —
+  // judged where the swept segment prevPos→pos crosses the line plane, not by
+  // where the ball happens to be when the frame ends. A 24–35 m/s shot moves
+  // 1.2–3.5 m per frame (dt up to 0.05 s, doubled at timeScale 2), so the old
+  // end-of-frame test tunnelled clean over the 1.6 m net window, and a
+  // diagonal shot that crossed inside the post was wide of it again by the
+  // detection frame: valid goals came back as goal kicks / corners.
+  const prev = e.ball.prevPos;
+  let crossedGoalLine = false;
+  let goalLineCrossZ = b.z;
+  for (const side of [1, -1]) {
+    const plane = side * (L + R);
+    const wasIn = side > 0 ? prev.x <= plane : prev.x >= plane;
+    const nowOut = side > 0 ? b.x > plane : b.x < plane;
+    if (!wasIn || !nowOut) continue;
+    crossedGoalLine = true;
+    const t = (plane - prev.x) / (b.x - prev.x);
+    goalLineCrossZ = prev.z + (b.z - prev.z) * t;
+    const crossY = prev.y + (b.y - prev.y) * t;
+    if (Math.abs(goalLineCrossZ) + R < GW && crossY + R < GH) {
+      e.rules.goal(e.ai.attackSign(0, e.rules.half) === side ? 0 : 1); onGoalReset(e); return;
+    }
+  }
+  // No swept crossing this frame (ball teleported or already behind the line
+  // when play resumed): fall back to the stationary net-volume test.
+  if (!crossedGoalLine && Math.abs(b.z) + R < GW && b.y + R < GH) {
     if (b.x > L + R && b.x < L + CONFIG.pitch.goalDepth + 0.4) {
       e.rules.goal(e.ai.attackSign(0, e.rules.half) > 0 ? 0 : 1); onGoalReset(e); return;
     }
@@ -136,7 +160,9 @@ export function outGoalCheck(e: MatchHost) {
       e.rules.startSetup("goal_kick", [gx, 0], defender);
     } else {
       const cx = side * (L - 0.25);
-      const cz = (b.z >= 0 ? 1 : -1) * (Wd - 0.25);
+      // Corner flag on the side where the ball actually crossed the line,
+      // which at shot pace can differ from where it ends the frame.
+      const cz = (goalLineCrossZ >= 0 ? 1 : -1) * (Wd - 0.25);
       e.outRestartCount++;
       e.rules.startSetup("corner", [cx, cz], attacker);
     }
@@ -147,7 +173,12 @@ export function outGoalCheck(e: MatchHost) {
   if (Math.abs(b.z) > Wd + R) {
     const lastT = touchTeam ?? 0;
     const team = 1 - lastT;
-    const cx = THREE.MathUtils.clamp(b.x, -L + 0.25, L - 0.25);
+    // Throw from where the ball crossed the touchline, not from wherever it
+    // was first sampled outside (metres further along at pass pace).
+    const touchPlane = Math.sign(b.z) * (Wd + R);
+    const crossX = Math.sign(prev.z) === Math.sign(b.z) && b.z !== prev.z
+      ? prev.x + (b.x - prev.x) * THREE.MathUtils.clamp((touchPlane - prev.z) / (b.z - prev.z), 0, 1) : b.x;
+    const cx = THREE.MathUtils.clamp(crossX, -L + 0.25, L - 0.25);
     const cz = (b.z > 0 ? 1 : -1) * (Wd - 0.25);
     e.outRestartCount++;
     e.rules.startSetup("throw_in", [cx, cz], team);

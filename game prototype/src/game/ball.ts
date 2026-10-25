@@ -203,6 +203,8 @@ export class Ball {
   mesh: THREE.Mesh;
   shadow: THREE.Mesh;
   pos = new THREE.Vector3(0, CONFIG.ball.radius, 0);
+  /** Position at the start of the last step: the swept segment goal/out checks need. */
+  prevPos = new THREE.Vector3(0, CONFIG.ball.radius, 0);
   vel = new THREE.Vector3();
   spin = new THREE.Vector3(); // rad/s angular velocity vector
   possessedBy: number | null = null; // player index
@@ -265,6 +267,7 @@ export class Ball {
   }
 
   step(dt: number, ownerPos?: THREE.Vector3, ownerFacing?: number, ownerVel?: THREE.Vector3) {
+    this.prevPos.copy(this.pos);
     this.kickAge += dt;
     if (this.possessedBy !== null && ownerPos !== undefined && ownerFacing !== undefined && ownerVel !== undefined) {
       this.glueTo(ownerPos, ownerFacing, ownerVel);

@@ -125,6 +125,8 @@ export class AIController {
   /** Engine-provided distribution evaluator (space + lane + pressure), not a distance rule. */
   gkDistribution: ((gkIdx: number) => { action: string; receiverIdx: number; target: THREE.Vector3; reason: string } | null) | null = null;
   private gkRead = new Map<number, { age: number; err: number; timing: number }>();
+  /** Last kick cancelled at its contact frame, per player, with its failure streak. */
+  private failedKicks = new Map<number, { key: string; count: number }>();
   /** One decision stream per player: a human/spectator branch cannot shift teammates' noise. */
   private playerStreams = new Map<number, SeededRandom>();
 
@@ -145,6 +147,27 @@ export class AIController {
     this.decisionContext.clear();
     this.playerStreams.clear();
     this.gkRead.clear();
+    this.failedKicks.clear();
+  }
+
+  /** A kick cancelled at its contact frame (no valid receiver by then). Re-deciding
+   * into the identical kick would restart the same wind-up forever, so the failed
+   * option is penalised, then excluded — see possessionDecision. */
+  noteKickFailed(idx: number, action: string, passTo?: number) {
+    const key = `${action}:${passTo ?? -1}`;
+    const prev = this.failedKicks.get(idx);
+    this.failedKicks.set(idx, { key, count: prev && prev.key === key ? prev.count + 1 : 1 });
+  }
+
+  /** The player got a kick away: the failure streak no longer applies. */
+  noteKickReleased(idx: number) { this.failedKicks.delete(idx); }
+
+  /** How many of the player's most recent committed choices are this exact key. */
+  private repeatStreak(idx: number, key: string): number {
+    const entries = this.recentChoices.get(idx) ?? [];
+    let streak = 0;
+    for (let i = entries.length - 1; i >= 0 && entries[i] === key; i--) streak++;
+    return streak;
   }
 
   private pointNearSegment(pt: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, radius: number): boolean {
@@ -157,18 +180,21 @@ export class AIController {
 
   constructor(private rng: SeededRandom, private matchSeed: number) {}
 
-  sampleStyle(role: string): PlayerStyle {
+  sampleStyle(role: string, idx?: number): PlayerStyle {
+    // With an index the style comes from that player's own stream: building
+    // (or removing) one player cannot re-roll every teammate's attributes.
+    const rng = idx === undefined ? this.rng : new SeededRandom(streamSeed(this.matchSeed, `ai-style:${idx}`));
     const fieldBias = role === "FWD" ? 0.08 : role === "DEF" ? -0.02 : 0;
     return {
-      directness: this.rng.range(0.72, 1.34) + fieldBias,
-      width: this.rng.range(0.78, 1.34),
-      risk: this.rng.range(0.72, 1.35),
-      carry: this.rng.range(0.7, 1.38),
-      shooting: this.rng.range(0.72, 1.38) + (role === "FWD" ? 0.12 : 0),
-      pressing: this.rng.range(0.78, 1.32) + (role === "DEF" || role === "MID" ? 0.06 : 0),
-      support: this.rng.range(0.8, 1.3),
-      creativity: this.rng.range(0.7, 1.4),
-      finesseSide: this.rng.next() < 0.5 ? -1 : 1,
+      directness: rng.range(0.72, 1.34) + fieldBias,
+      width: rng.range(0.78, 1.34),
+      risk: rng.range(0.72, 1.35),
+      carry: rng.range(0.7, 1.38),
+      shooting: rng.range(0.72, 1.38) + (role === "FWD" ? 0.12 : 0),
+      pressing: rng.range(0.78, 1.32) + (role === "DEF" || role === "MID" ? 0.06 : 0),
+      support: rng.range(0.8, 1.3),
+      creativity: rng.range(0.7, 1.4),
+      finesseSide: rng.next() < 0.5 ? -1 : 1,
     };
   }
 
@@ -190,8 +216,10 @@ export class AIController {
     // Keepers facing an inbound shot re-evaluate every frame: a 25 m/s shot crosses the
     // box in ~0.5 s, so a 0.28 s decision gate made them physically unable to respond.
     const shotInbound = p.role === "GK" && !!this.readShot(p, snap, this.ownGoal(p.team, snap.half));
+    // A 1v1 carrier moves the keeper's target metres per think gate, like a shot.
+    const oneOnOne = p.role === "GK" && !!this.oneOnOneCarrier(p, snap, this.ownGoal(p.team, snap.half));
     const context = `${snap.half}:${snap.ballOwner}:${snap.passFlight?.launchedAt ?? -1}`;
-    if (!shotInbound && now < gate && this.decisionContext.get(p.idx) === context && this.lastDecision.has(p.idx)) return this.lastDecision.get(p.idx)!;
+    if (!shotInbound && !oneOnOne && now < gate && this.decisionContext.get(p.idx) === context && this.lastDecision.has(p.idx)) return this.lastDecision.get(p.idx)!;
     this.decisionContext.set(p.idx, context);
     // Real AI decision delay: outfield 0.28 s, goalkeeper 0.35 s. Use a
     // per-player stream so skipping one player's think (human/spectator mode)
@@ -219,7 +247,7 @@ export class AIController {
       return this.store(p.idx, gk);
     }
 
-    if (p.hasBall) return this.store(p.idx, this.possessionDecision(p, snap, noise, novelty, jitter));
+    if (p.hasBall) return this.store(p.idx, this.possessionDecision(p, snap, noise, novelty, jitter, rng));
 
     if (snap.ballOwner === null && snap.passFlight?.receiver === p.idx) {
       const target = snap.passFlight.target.clone();
@@ -293,6 +321,9 @@ export class AIController {
     const shotThreat = centerThreat && d(carrier.pos, ownGoal) < 23.5;
     const assignments = this.markerAssignments(snap, p.team);
     const markedOpponent = assignments.get(p.idx);
+    // Team AI: the side's pressing mentality scales how hard the whole unit
+    // steps out and hunts the carrier, on top of each player's own style.
+    const teamPressing = this.tactics.teamStyle(p.team, snap.matchSeed).pressing;
 
     // Back line steps out to close the central carrier AND the partner covers the shooting lane.
     if (p.role === "DEF" && centerThreat) {
@@ -307,7 +338,7 @@ export class AIController {
       const action = isClosest && distance < 1.55 && this.canTackle(p, snap, "tackle_stand") ? "tackle_stand"
         : isClosest && distance < 2.5 && p.style.risk > 1.12 && this.canTackle(p, snap, "tackle_slide") ? "tackle_slide" : null;
       return this.store(p.idx, {
-        moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing,
+        moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing * teamPressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: `step:${Math.round(carrierLocal / 4)}:${isClosest ? 1 : 0}`,
         reason: isClosest
           ? `DEF STEP · close ${shotThreat ? "central shot lane" : "carrier"} · ${distance.toFixed(1)}m`
@@ -331,7 +362,7 @@ export class AIController {
         pressPoint.addScaledVector(toOwn, p.role === "DEF" ? 1.2 : 0.5);
       }
       return this.store(p.idx, {
-        moveTarget: pressPoint, desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing,
+        moveTarget: pressPoint, desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing * teamPressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: "press-carrier",
         reason: action ? `${action} · press trigger` : `Press carrier · goal-side · ${dist.toFixed(1)}m`,
         utilities: { press: 1, distance: dist }, urgent: true,
@@ -407,6 +438,7 @@ export class AIController {
   private possessionDecision(
     p: WorldPlayer, snap: WorldSnap, noise: (scale?: number) => number,
     novelty: (key: string) => number, jitter: (key: string) => number,
+    rng: SeededRandom,
   ): AIDecision {
     const T = CONFIG.tactics;
     const sign = this.attackSign(p.team, snap.half);
@@ -419,7 +451,15 @@ export class AIController {
     // `transition` is the explicit state the old AI lacked: possession just won from
     // the opponent — pass/carry forward first, recycle only if nothing is on.
     const phase = plan?.phase ?? "progress";
-    const weights = T.phaseWeights[phase] ?? T.phaseWeights.progress;
+    const baseWeights = T.phaseWeights[phase] ?? T.phaseWeights.progress;
+    // Team AI: the side's mentality tilts the collective gain-vs-safety
+    // tradeoff for every carrier; the individual scores below are unchanged.
+    const teamDirectness = plan?.teamStyle.directness ?? 1;
+    const weights = {
+      gain: baseWeights.gain * teamDirectness,
+      safety: baseWeights.safety * (2 - teamDirectness),
+      hazard: baseWeights.hazard,
+    };
     const trigger = plan?.trigger;
     const distance = groundDistance(p.pos, goal);
     const pressure = nearestSpace(p.pos, field);
@@ -440,9 +480,11 @@ export class AIController {
       ? THREE.MathUtils.clamp(1 - distance / (T.edgeShotDistance + 4), 0, 1) * (0.30 + 0.70 * shotLane) * windowRatio
       : 0;
     const shotKey = `shoot:${Math.floor(distance / 4)}`;
+    // Shot score: expected-goal quality (distance, lane, window) scaled by the
+    // shooter's finishing style, minus block risk under pressure and fatigue.
     const shoot = inRange
       ? 0.26 + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
-        - (pressed && shotLane < 0.4 ? 0.18 : 0) - novelty(shotKey) * 0.2
+        - (pressed && shotLane < 0.4 ? 0.18 : 0) - novelty(shotKey) * 0.2 - (1 - p.stamina) * 0.18
       : -1;
     const shotId = ["shoot_normal", "shoot_finesse"].find((id) => this.can(p, id));
     const lineU = this.defensiveLineU(snap, p.team);
@@ -475,6 +517,10 @@ export class AIController {
         id = action; break;
       }
       if (!id) continue;
+      // This exact kick already failed at its contact frame twice in a row:
+      // excluded once, so the re-decision must find another way out.
+      const failed = this.failedKicks.get(p.idx);
+      if (failed && failed.key === `${id}:${mate.idx}` && failed.count >= 2) continue;
       const gain = (target.x - p.pos.x) * sign;
       const lane = laneSafety(snap.ballPos, target, field, id === "pass_long" ? 17 : 11);
       // Use both the current marker and predicted position: a marked player is not
@@ -501,6 +547,9 @@ export class AIController {
       const key = `pass:${mate.idx}`;
       const returnPass = snap.lastPass?.receiver === p.idx && snap.lastPass.passer === mate.idx
         && snap.time - snap.lastPass.t < T.returnPassWindow;
+      // Pass score: completion probability (lane + receiver space) times
+      // forward progress (gain, line-breaking), minus turnover risk (crowded
+      // or marked receiver, shut lane) and repetition.
       let score = lane * weights.safety + THREE.MathUtils.clamp(space / 5, 0, 1) * 0.20
         + THREE.MathUtils.clamp(gain / 12, -0.6, 1) * weights.gain
         + (crossesLine && safe ? 0.16 : 0)
@@ -510,7 +559,14 @@ export class AIController {
         // point of the ball, so a cross is scored on its delivery lane and not on the
         // receiver's crowding. Ground passes keep the old penalties.
         - crowd * 0.17 - (crossBall ? 0 : (space < 1.5 ? 0.35 : 0)) - (lane < 0.35 ? 0.4 : 0)
-        - novelty(key) * 0.35 + noise(0.16) + jitter(key)
+        - novelty(key) * 0.35
+        // Novelty saturates (0.38 cap ≈ 0.13 of score): a clearly-best pass
+        // stayed best forever and A→B→A→B cycled deterministically. The
+        // consecutive-repeat streak is uncapped, so repetition always
+        // eventually costs more than the lane is worth.
+        - this.repeatStreak(p.idx, key) * CONFIG.ai.noveltyPenalty
+        - (failed && failed.key === `${id}:${mate.idx}` ? failed.count * CONFIG.ai.noveltyPenalty : 0)
+        + noise(0.16) + jitter(key)
         + (crossBall ? 0.16 + (lane > 0.4 ? 0.2 : 0) : 0)
         + (longSwitch && lane > T.minSafeLane ? 0.12 : 0);
       // Circulation with no threat: a square ball to a congested area costs more in
@@ -540,14 +596,37 @@ export class AIController {
       if (o.mate.role === "GK") o.score -= 0.05; // prefer a safe nearby pivot if both are available
     }
     options.sort((a, b) => b.score - a.score || jitter(a.key) - jitter(b.key));
-    const best = options[0];
+    // Sample the pass probabilistically from the near-best pool instead of a
+    // hard argmax: with scores this close the "best" pass is a coin the
+    // deterministic code kept landing on the same side, which is what made
+    // passing patterns repeat verbatim. Weight falls off exponentially with
+    // the score gap (temperature = the existing decision-noise scale), so a
+    // clearly superior pass is still picked almost always.
+    let best = options[0];
+    if (best && options.length > 1) {
+      const topScore = best.score;
+      // Like-for-like only: sampling must not turn the preferred pivot recycle
+      // into a 23 m back-pass to the keeper (or vice versa) because the keeper
+      // always has acres of space, and must not trade a safe ball for an
+      // unsafe one. The keeper boundary and the safety class stay deterministic.
+      const pool = options.filter((o) => o.score >= topScore - CONFIG.ai.decisionNoise * 3
+        && (o.mate.role === "GK") === (best.mate.role === "GK")
+        && (!best.safe || o.safe));
+      if (pool.length > 1) {
+        best = rng.weighted(pool.map((o) => ({
+          value: o, weight: Math.exp((o.score - topScore) / CONFIG.ai.decisionNoise),
+        })));
+      }
+    }
     // Carrying into vacant space is progression too: value the ground ahead, not
     // only the lane the ball is on right now.
     // Carrying past a defender who is already on top of you is not "progression": it
     // is the turnover the report describes. Value the space ahead only while there is
     // room to actually use it.
+    // Dribble score: space ahead and the chosen lane, minus pressure /
+    // tackle risk and the stamina cost of carrying at pace.
     const carry = dribble.score + forwardSpace * 0.14 + (trigger?.active ? 0.06 : 0)
-      - (pressed ? 0.25 : 0) - (needsReset ? 0.12 : 0)
+      - (pressed ? 0.25 : 0) - (needsReset ? 0.12 : 0) - (1 - p.stamina) * 0.22
       - THREE.MathUtils.clamp((2.5 - pressure) / 2.5, 0, 1) * 0.45;
     const utilities = { shoot, pass: best?.score ?? -1, dribble: carry, shotLane, opening, shotQuality: quality,
       pressure, carryLane, forwardSpace, reset: needsReset ? 1 : 0, passLane: best?.lane ?? 0,
@@ -566,13 +645,27 @@ export class AIController {
     const inOwnBox = Math.abs(p.pos.x - ownGoalPos.x) < 5.8 && Math.abs(p.pos.z) < 6.2;
     const safeOutlet = options.some((o) => o.lane >= T.minSafeLane && o.space >= T.minSafeReceiverSpace
       && !(o.mate.role === "GK" && inOwnBox));
-    const swarmed = pressure < T.pressureDistance;
-    if ((inOwnBox || depthFromOwnGoal < CONFIG.pitch.length * 0.35) && swarmed && !safeOutlet) {
+    // Immediate danger is arrival time, not mere proximity. The old test —
+    // nearest opponent inside 3.2 m — counted one static attacker marking
+    // space as "swarmed" and booted the ball away with time to play. Clear
+    // only when the nearest opponent can actually reach the carrier within
+    // ~1 s (or is already inside tackling range), there is no safe outlet,
+    // and no forward lane to carry out of trouble.
+    const nearestOpp = field.reduce<WorldPlayer | null>(
+      (acc, q) => (acc === null || groundDistance(q.pos, p.pos) < groundDistance(acc.pos, p.pos) ? q : acc), null);
+    let closing = 0;
+    if (nearestOpp && pressure > 0.01) {
+      const ux = (p.pos.x - nearestOpp.pos.x) / pressure, uz = (p.pos.z - nearestOpp.pos.z) / pressure;
+      closing = (nearestOpp.vel.x - p.vel.x) * ux + (nearestOpp.vel.z - p.vel.z) * uz;
+    }
+    const imminent = pressure < 1.55 || (closing > 0.5 && pressure / closing < 1);
+    const forwardEscape = (dribble.target.x - p.pos.x) * sign > 0.5 && carryLane >= 0.4;
+    if ((inOwnBox || depthFromOwnGoal < CONFIG.pitch.length * 0.35) && imminent && !safeOutlet && !forwardEscape) {
       const escape = new THREE.Vector3(goal.x, 0,
         THREE.MathUtils.clamp(p.pos.z * 0.2 + (p.pos.z >= 0 ? -2.5 : 2.5), -6.5, 6.5));
       return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: "pass_long", actionTarget: escape,
         noveltyKey: "clearance",
-        reason: `CLEARANCE · ${inOwnBox ? "own box" : "deep"} · swarmed ${pressure.toFixed(1)}m · no safe outlet · ${depthFromOwnGoal.toFixed(1)}m from own goal`,
+        reason: `CLEARANCE · ${inOwnBox ? "own box" : "deep"} · attacker arriving ${pressure.toFixed(1)}m @ ${closing.toFixed(1)}m/s · no safe outlet · no escape lane · ${depthFromOwnGoal.toFixed(1)}m from own goal`,
         utilities, urgent: true };
     }
 
@@ -725,6 +818,32 @@ export class AIController {
           reason: `GK claim cross · reach ${reach.toFixed(1)}m`, utilities: { cross: 1 }, urgent: true,
         };
       }
+    }
+
+    // 1v1: the carrier is through the line with nobody goal-side but the
+    // keeper. Holding the angle arc leaves him ~2 m out and the carrier walks
+    // to point-blank range; instead sprint to a big stance just goal-side of
+    // the ball to shut the angle, then use the hands at his feet inside the
+    // box (smother) or slide with the feet outside it, where hands are illegal.
+    const oneOnOne = this.oneOnOneCarrier(p, snap, ownGoal);
+    if (oneOnOne) {
+      const ballDist = d2(p.pos, ball);
+      const keeperDepth = (p.pos.x - ownGoal.x) * atkSign;
+      const inBox = keeperDepth < 5.8 && Math.abs(p.pos.z) < 6.2;
+      const toGoal = ownGoal.clone().sub(ball).setY(0).normalize();
+      const stance = ball.clone().setY(0).addScaledVector(toGoal, CONFIG.ai.catchRadius);
+      stance.x = THREE.MathUtils.clamp(stance.x, -CONFIG.pitch.length / 2 + 0.3, CONFIG.pitch.length / 2 - 0.3);
+      let action: string | null = null;
+      if (inBox && ballDist < CONFIG.ai.catchRadius + 0.5 && (oneOnOne.tackleProtectionT ?? 0) <= 0 && this.can(p, "gk_catch")) action = "gk_catch";
+      else if (!inBox && ballDist < 2.5 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
+      return {
+        moveTarget: stance, desiredSpeed: CONFIG.player.gkSprintSpeed,
+        action, actionTarget: ball.clone(), noveltyKey: "gk-1v1",
+        reason: action === "gk_catch" ? `GK 1v1 SMOTHER · hands at carrier's feet · ${ballDist.toFixed(1)}m`
+          : action === "tackle_slide" ? `GK 1v1 SLIDE · feet outside the box · ${ballDist.toFixed(1)}m`
+            : `GK 1v1 · close the angle · ${ballDist.toFixed(1)}m`,
+        utilities: { oneOnOne: 1, ballDist }, urgent: true,
+      };
     }
 
     // Track the ball on a real angle arc: off the line, on the ball→goal-centre
@@ -1017,6 +1136,23 @@ export class AIController {
     if ((p.cooldowns.get(clip) ?? 0) > 0) return false;
     if ((clip === "tackle_stand" || clip === "tackle_slide") && (p.tackleRecoveryT ?? 0) > 0) return false;
     return !p.busy && !p.uninterruptible;
+  }
+
+  /**
+   * The 1v1 carrier, if there is one: an opponent through the defensive line
+   * in front of the keeper's goal with no outfield teammate goal-side of him.
+   * With a defender goal-side the keeper holds his angle instead of vacating
+   * the goal for the square ball.
+   */
+  private oneOnOneCarrier(p: WorldPlayer, snap: WorldSnap, ownGoal: THREE.Vector3): WorldPlayer | null {
+    const carrier = snap.players.find((q) => q.idx === snap.ballOwner);
+    if (!carrier || carrier.team === p.team) return null;
+    const sign = this.attackSign(p.team, snap.half);
+    const depth = (snap.ballPos.x - ownGoal.x) * sign;
+    if (depth <= 0 || depth > CONFIG.ai.gkRushLine * 2 || Math.abs(snap.ballPos.z) >= 6.2) return null;
+    const covered = snap.players.some((q) => q.team === p.team && q.idx !== p.idx && q.role !== "GK"
+      && (q.pos.x - ownGoal.x) * sign < depth - 0.5 && Math.abs(q.pos.z - snap.ballPos.z) < 4);
+    return covered ? null : carrier;
   }
 
   /**

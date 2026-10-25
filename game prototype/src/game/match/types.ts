@@ -73,7 +73,6 @@ export interface PassPlan {
 }
 
 export type CameraMode = "broadcast" | "follow" | "free";
-export type FamilyMode = "mixed" | "blocky" | "roundy";
 
 /** Keeper distribution choice (short/long option scoring). */
 export interface GkDistribution {

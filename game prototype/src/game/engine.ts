@@ -50,11 +50,11 @@ import { attachInput, detachInput, handleKey } from "./match/input";
 import { placeForRestart, resetPositions } from "./match/restarts";
 import { buildSnapshot } from "./match/snapshot";
 import type {
-  ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, FamilyMode, PassTrace,
+  ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, PassTrace,
 } from "./match/types";
 
 // Re-exported so existing imports of the engine module keep working.
-export type { ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, FamilyMode, PassTrace } from "./match/types";
+export type { ActionSeedRecord, AITraceRow, CameraMode, EnginePlayer, PassTrace } from "./match/types";
 
 /**
  * Owns all match state. Members below the public API are the surface the
@@ -76,7 +76,6 @@ export class MatchEngine {
   humanTeam = 0;
   spectator = false;
   cameraMode: CameraMode = "broadcast";
-  familyMode: FamilyMode = "mixed";
   timeScale = 1;
   aimRaw = false;
   showAIDebug = true;
@@ -145,7 +144,7 @@ export class MatchEngine {
   restartContactT = 0;
   disposed = false;
 
-  constructor(canvas: HTMLCanvasElement, opts?: { family?: FamilyMode; spectator?: boolean; seed?: number; headless?: boolean; debugAI?: boolean }) {
+  constructor(canvas: HTMLCanvasElement, opts?: { spectator?: boolean; seed?: number; headless?: boolean; debugAI?: boolean }) {
     this.canvas = canvas;
     // A fixed seed reproduces a match exactly (AI decisions + restart sampling).
     this.matchSeed = opts?.seed ?? createMatchSeed();
@@ -156,7 +155,6 @@ export class MatchEngine {
     this.ai = new AIController(new SeededRandom(streamSeed(this.matchSeed, "ai")), this.matchSeed);
     this.headless = opts?.headless ?? false;
     if (opts?.debugAI !== undefined) this.debugAI = opts.debugAI;
-    this.familyMode = opts?.family ?? "mixed";
     this.spectator = opts?.spectator ?? false;
     this.renderer = createRenderer(canvas, this.headless);
     configureScene(this.scene);

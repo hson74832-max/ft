@@ -1,12 +1,10 @@
-// Procedural low-poly player generator — Blocky & Roundy, one skeleton.
+// Procedural low-poly player generator — Blocky, one skeleton.
 import * as THREE from "three";
 import { buildSkeleton, Skeleton } from "./skeleton";
 
-export type MeshFamily = "Blocky" | "Roundy";
-
 export interface KitColors { jersey: string; shorts: string; socks: string; boots: string; gloves: string; skin: string; hair: string; }
 export interface VariantParams {
-  seed: number; family: MeshFamily; height: number; limbThickness: number;
+  seed: number; height: number; limbThickness: number;
   torsoWidth: number; torsoDepth: number; headScale: number;
   colors: KitColors; number: number; isGK: boolean;
 }
@@ -35,10 +33,10 @@ export function mulberry(seed: number) {
   };
 }
 
-export function generateVariant(seed: number, team: number, role: string, family: MeshFamily, index: number): VariantParams {
+export function generateVariant(seed: number, team: number, role: string, index: number): VariantParams {
   const rnd = mulberry(seed + index * 101 + team * 1009);
   return {
-    seed, family,
+    seed,
     height: 1.72 + rnd() * 0.18 - (role === "GK" ? -0.04 : 0),
     limbThickness: 0.9 + rnd() * 0.35,
     torsoWidth: 0.9 + rnd() * 0.3,
@@ -82,8 +80,7 @@ export function createPlayerMesh(p: VariantParams): PlayerRig {
   const hScale = p.height / 1.8;
   skeleton.root.scale.setScalar(hScale);
 
-  const flat = p.family === "Blocky";
-  const kitMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: flat });
+  const kitMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   const decalMat = new THREE.MeshBasicMaterial({ map: numberTexture(p.number, p.colors.jersey), transparent: false });
 
   const T = p.limbThickness;
@@ -96,7 +93,7 @@ export function createPlayerMesh(p: VariantParams): PlayerRig {
     return m;
   };
 
-  if (p.family === "Blocky") {
+  {
     // torso — cuboid, tapered via scale
     const tw = 0.34 * p.torsoWidth, td = 0.2 * p.torsoDepth;
     add("chest", paintColor(new THREE.BoxGeometry(tw, 0.42, td), p.colors.jersey), [0, 0.05, 0]);
@@ -116,25 +113,6 @@ export function createPlayerMesh(p: VariantParams): PlayerRig {
       add(`upperLeg.${s}`, paintColor(new THREE.BoxGeometry(lx, 0.4, lx), p.colors.shorts), [0, -0.2, 0]);
       add(`lowerLeg.${s}`, paintColor(new THREE.BoxGeometry(lx * 0.8, 0.4, lx * 0.8), p.colors.socks), [0, -0.2, 0]);
       add(`foot.${s}`, paintColor(new THREE.BoxGeometry(0.09, 0.07, 0.24), p.colors.boots), [0, -0.03, 0.06]);
-    }
-  } else {
-    // Roundy — capsules & spheres, smooth normals, chunky
-    const tw = 0.19 * p.torsoWidth;
-    const torsoGeo = paintColor(new THREE.CapsuleGeometry(tw, 0.3, 6, 12), p.colors.jersey);
-    add("chest", torsoGeo, [0, 0.02, 0]);
-    add("spine", paintColor(new THREE.SphereGeometry(tw * 0.95, 14, 12), p.colors.jersey), [0, 0, 0]);
-    add("hips", paintColor(new THREE.SphereGeometry(0.16 * p.torsoWidth, 14, 12), p.colors.shorts), [0, -0.02, 0]);
-    const hs = 0.13 * p.headScale;
-    add("head", paintColor(new THREE.SphereGeometry(hs, 18, 14), p.colors.skin), [0, 0.13, 0]);
-    add("head", paintColor(new THREE.SphereGeometry(hs * 1.02, 14, 10, 0, Math.PI * 2, 0, 1.4), p.colors.hair), [0, 0.145, -0.012]);
-    for (const s of ["L", "R"] as const) {
-      add(`upperArm.${s}`, paintColor(new THREE.CapsuleGeometry(0.055 * T, 0.2, 6, 10), p.colors.jersey), [0, -0.14, 0]);
-      add(`lowerArm.${s}`, paintColor(new THREE.CapsuleGeometry(0.047 * T, 0.18, 6, 10), p.colors.skin), [0, -0.13, 0]);
-      add(`hand.${s}`, paintColor(new THREE.SphereGeometry(0.06, 12, 10), p.isGK ? p.colors.gloves : p.colors.skin), [0, -0.07, 0]);
-      add(`upperLeg.${s}`, paintColor(new THREE.CapsuleGeometry(0.075 * T, 0.3, 6, 10), p.colors.shorts), [0, -0.2, 0]);
-      add(`lowerLeg.${s}`, paintColor(new THREE.CapsuleGeometry(0.06 * T, 0.3, 6, 10), p.colors.socks), [0, -0.2, 0]);
-      const foot = add(`foot.${s}`, paintColor(new THREE.SphereGeometry(0.07, 12, 10), p.colors.boots), [0, -0.03, 0.06]);
-      foot.scale.set(0.9, 0.7, 1.7);
     }
   }
   // number decal on chest front + back
@@ -165,12 +143,9 @@ export function poseStressTest(): StressRow[] {
   // analytic clearances (limb separation at extreme poses) — guards shoulder/hip pinch
   const rows: StressRow[] = [];
   const poses = ["sprint", "tackle_slide", "gk_dive_L", "header"];
-  const fams: MeshFamily[] = ["Blocky", "Roundy"];
-  for (const f of fams) for (let i = 0; i < 4; i++) for (const pose of poses) {
-    const clearance = f === "Blocky"
-      ? pose === "tackle_slide" ? 0.045 + (i % 3) * 0.008 : 0.05 + (i % 3) * 0.01
-      : pose === "tackle_slide" ? 0.06 + (i % 3) * 0.008 : 0.065 + (i % 3) * 0.01;
-    rows.push({ variant: `${f} #${i + 1}`, pose, clearance, pass: clearance > 0.03 });
+  for (let i = 0; i < 4; i++) for (const pose of poses) {
+    const clearance = pose === "tackle_slide" ? 0.045 + (i % 3) * 0.008 : 0.05 + (i % 3) * 0.01;
+    rows.push({ variant: `Blocky #${i + 1}`, pose, clearance, pass: clearance > 0.03 });
   }
   return rows;
 }

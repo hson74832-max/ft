@@ -237,7 +237,16 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       break;
     }
     case "gk_catch": case "gk_parry": case "gk_dive_L": case "gk_dive_R": {
-      if (e.ball.possessedBy !== null) break;
+      // Hands on a possessed ball are only the 1v1 smother: keeper in his own
+      // box, opponent carrier, ball not protected by a just-won tackle. Every
+      // other possessed ball stays untouchable, as before.
+      const smotherCarrier = e.ball.possessedBy !== null ? e.players[e.ball.possessedBy] : null;
+      if (smotherCarrier) {
+        const ownGoalPos = e.ai.ownGoal(p.team, e.rules.half);
+        const inOwnBox = Math.abs(p.pos.x - ownGoalPos.x) < 5.8 && Math.abs(p.pos.z) < 6.2;
+        if (action !== "gk_catch" || smotherCarrier.team === p.team || !inOwnBox
+          || smotherCarrier.tackleProtectionT > 0) break;
+      }
       if (e.ball.handsRestrictedTeam === p.team) break;
       const diving = action === "gk_dive_L" || action === "gk_dive_R";
       // Hand reach at the contact frame. A dive's root motion has already displaced the
@@ -263,14 +272,17 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         break;
       }
       const speed = e.ball.speed;
+      // A smother only gathers a ball the carrier has left exposed on the
+      // keeper's side of his body; a shielded ball can at best be blocked loose.
+      const exposed = !smotherCarrier || e.ball.pos.distanceTo(p.pos) < smotherCarrier.pos.distanceTo(p.pos);
       // Catch only clean, central, not-too-hot balls; otherwise the save is a parry.
-      if (action === "gk_catch" && speed < CONFIG.ai.gkCatchSpeed && best < CONFIG.ai.gkStandingReach + 0.15) {
+      if (action === "gk_catch" && exposed && speed < CONFIG.ai.gkCatchSpeed && best < CONFIG.ai.gkStandingReach + 0.15) {
         e.ball.possess(p.idx, p.team);
         e.ball.vel.set(0, 0, 0);
         e.offsideCandidates.clear(); e.offsideTeam = null;
         p.holdT = 0;
-        aiEvent(e, `GK CATCH #${p.idx} · ${speed.toFixed(1)} m/s at ${best.toFixed(2)}m`);
-        e.rules.emit("SAVE", `GK CATCH by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
+        aiEvent(e, `GK ${smotherCarrier ? "SMOTHER" : "CATCH"} #${p.idx} · ${speed.toFixed(1)} m/s at ${best.toFixed(2)}m`);
+        e.rules.emit("SAVE", `GK ${smotherCarrier ? "SMOTHER" : "CATCH"} by ${p.team === 0 ? "RED" : "BLUE"}`, p.team);
         break;
       }
       // Parry: deflect wide of goal, keeping some of the shot's energy.
@@ -350,6 +362,7 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
   }
   if (ballReleasedByAction) {
     aiEvent(e, `KICK released by #${p.idx} ${p.role} · ${action} · ${e.ball.speed.toFixed(1)} m/s${pk?.passTo !== undefined ? ` → #${pk.passTo}` : ""}`);
+    e.ai.noteKickReleased(p.idx);
   } else if (tackleOutcome) {
     aiEvent(e, `TACKLE ${tackleOutcome === "clean" ? "WON" : "MISSED"} #${p.idx} · ${action} · ${tackleOutcome} · ${tackleDetail}`);
   } else if (pk && pk.action === action && (action === "intercept" || action === "first_touch" || action === "header" || action.startsWith("gk_"))) {
@@ -357,6 +370,9 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
     aiEvent(e, `${action.toUpperCase()} ${won ? "WON" : "MISSED"} #${p.idx}`);
   } else if (pk && pk.action === action) {
     aiEvent(e, `KICK CANCELLED #${p.idx} · ${action} · ${p.decisionReason}`);
+    // Remember the failed kick: re-deciding into the identical pass would
+    // restart the same wind-up/cancel cycle indefinitely.
+    if (action.startsWith("pass_")) e.ai.noteKickFailed(p.idx, action, pk.passTo);
     e.ai.nextThink.set(p.idx, 0); // carrier re-decides immediately instead of stalling
   }
   if (p.restartTaker && activeRestart && e.restartStartedId === activeRestart.id) {
