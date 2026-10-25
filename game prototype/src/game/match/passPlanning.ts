@@ -29,7 +29,12 @@ export function passProfile(action: string): { loft: number; maxPower: number; m
   const kp = CONFIG.player.kickPower;
   switch (action) {
     case "pass_short": return { loft: 0.025, maxPower: kp.pass, minPower: 0.6, arrival: 5.0 };
-    case "pass_long": return { loft: 0.06, maxPower: kp.longPass, minPower: 1.5, arrival: 6.5 };
+    // A driven long ball has to stay low: at loft 0.06 the ball leaves the ground just
+    // enough to bounce, and each bounce takes 35% of the horizontal speed (restitution),
+    // so a 24 m/s long pass carried 22.2 m — less than an 11 m/s short pass (27.8 m) and
+    // short of the 27 m the AI is willing to aim at. Loft 0.20 calibrates 4–28 m and
+    // carries 31 m flat out, so long balls and crosses actually reach their target.
+    case "pass_long": return { loft: 0.20, maxPower: kp.longPass, minPower: 1.5, arrival: 6.5 };
     case "pass_through": return { loft: 0.035, maxPower: kp.through, minPower: 1.0, arrival: 4.0 };
     // Throw-ins and corners are lofted deliveries, not driven balls: high loft gives a
     // real arc into the danger area (a flat loft made corners look short/driven).

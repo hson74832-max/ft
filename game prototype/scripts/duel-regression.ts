@@ -14,6 +14,7 @@ import { startAction } from "../src/game/match/actions";
 import { footWorld, onContact } from "../src/game/match/contacts";
 import { updateAIDebug } from "../src/game/match/debug";
 import { resetPositions } from "../src/game/match/restarts";
+import { yawDelta } from "../src/game/angles";
 import { decayTackleTimers, tackleRecovery } from "../src/game/match/tackles";
 import type { EnginePlayer } from "../src/game/match/types";
 
@@ -103,6 +104,8 @@ test("a front-on, on-time standing challenge wins the ball and starts recovery/p
 
 test("blindside/late contact never grants free possession and costs recovery", () => {
   const e = fresh(902);
+  // Fouls off: this case is about the possession outcome, not the whistle.
+  e.foulsOn = false;
   const { carrier, tackler } = setupDuel(e, { tacklerX: -0.9, tacklerFacing: 0 });
   resolveTackle(e, tackler, "tackle_stand");
   assert.equal(e.ball.possessedBy, carrier.idx, "bad challenge must not steal possession");
@@ -272,6 +275,122 @@ test("one player's human/spectator think skip cannot shift another player's AI s
   assert.equal(da.reason, db.reason);
   assert.deepEqual(da.utilities, db.utilities);
   assert.equal(da.action, db.action);
+});
+
+test("a goalkeeper holding the ball cannot be tackled", () => {
+  const e = fresh(910);
+  const gk = e.players[0];
+  const outfield = e.players[4];
+  const tackler = e.players[6];
+  assert.equal(gk.role, "GK");
+  assert.equal(tackler.team, 1);
+
+  // 1. The wind-up is refused before it starts: the ball is in the keeper's hands.
+  gk.pos.set(-18, 0, 0); gk.facing = 0;
+  e.ball.possess(gk.idx, gk.team);
+  e.ball.handsRestrictedTeam = null;
+  e.ball.pos.set(-18, CONFIG.ball.radius, 0.48);
+  tackler.pos.set(-17, 0, 0); tackler.facing = Math.PI;
+  assert.equal(startAction(e, tackler, "tackle_stand", e.ball.pos.clone()), false,
+    "a keeper in possession must not be challengeable");
+  assert.equal(e.tacticalStats.tacklesAttempted, 0, "a refused challenge is not an attempt");
+
+  // 2. A challenge already in flight when the keeper gathers the ball wins nothing and
+  //    is not a foul against the keeper either.
+  outfield.pos.set(-16, 0, 0); outfield.facing = 0;
+  tackler.pos.set(-16.5, 0, 0); tackler.facing = Math.PI;
+  gk.pos.set(-18, 0, 0);
+  e.ball.possess(outfield.idx, outfield.team);
+  e.ball.pos.set(-16.48, CONFIG.ball.radius, 0);
+  assert.equal(startAction(e, tackler, "tackle_stand", e.ball.pos.clone()), true);
+  // The keeper collects it mid-wind-up.
+  e.ball.possess(gk.idx, gk.team);
+  e.ball.pos.set(-18, 0.9, 0);
+  for (let i = 0; i < 120; i++) {
+    const dt = 1 / 60;
+    e.clock += dt;
+    for (const p of e.players) decayTackleTimers(p, dt);
+    const frame = tackler.anim.update(dt, 0, 0);
+    if (frame.contact) { onContact(e, tackler, frame.contact); break; }
+  }
+  assert.equal(e.ball.possessedBy, gk.idx, "the keeper keeps the ball");
+  assert.equal(e.tacticalStats.fouls, 0, "no foul may be given against the keeper");
+  assert.equal(e.tacticalStats.tacklesWon, 0);
+  e.dispose();
+});
+
+/** Side-on body contact that arrives with the ball out of reach: mistimed, not won. */
+function setupMistimed(e: MatchEngine) {
+  const carrier = e.players[4];
+  const tackler = e.players[6];
+  carrier.pos.set(0, 0, 0); carrier.facing = 0;
+  carrier.vel.set(0, 0, 0); carrier.speed = 0;
+  tackler.pos.set(0, 0, 1.85);
+  tackler.facing = Math.atan2(1.85, 0.48); // face the ball, not the carrier
+  tackler.vel.set(0, 0, 0); tackler.speed = 0;
+  e.ball.possess(carrier.idx, carrier.team);
+  e.ball.pos.set(0.48, CONFIG.ball.radius, 0);
+  e.ball.vel.set(0, 0, 0);
+  e.offsideCandidates.clear(); e.offsideTeam = null;
+  return { carrier, tackler };
+}
+
+test("a challenge that hits the man but not the ball is a foul", () => {
+  const e = fresh(911);
+  e.foulsOn = false;
+  const { carrier, tackler } = setupMistimed(e);
+  resolveTackle(e, tackler, "tackle_stand");
+  assert.equal(e.tacticalStats.fouls, 1, "body contact with the ball out of reach is a foul");
+  assert.equal(e.tacticalStats.tacklesWon, 0, "and it never wins the ball");
+  assert.equal(e.ball.possessedBy, carrier.idx, "the fouled carrier keeps the ball with fouls off");
+  assert(tackler.tackleRecoveryT >= 0.45, "a foul costs extra recovery");
+  e.dispose();
+});
+
+test("a foul stops play and gives the free kick to the fouled side", () => {
+  const e = fresh(912);
+  const { carrier, tackler } = setupMistimed(e);
+  resolveTackle(e, tackler, "tackle_stand");
+  assert.equal(e.rules.phase, "SETUP", "the whistle stops play");
+  assert.equal(e.rules.pendingRestart?.kind, "free_kick");
+  assert.equal(e.rules.pendingRestart?.team, carrier.team, "the fouled team restarts");
+  assert.equal(e.ball.possessedBy, null);
+  e.dispose();
+});
+
+test("a foul inside the box being attacked is a penalty, not a free kick", () => {
+  const e = fresh(913);
+  const { carrier, tackler } = setupMistimed(e);
+  const goal = e.ai.goalPos(carrier.team, e.rules.half);
+  carrier.pos.set(goal.x - 3, 0, 0);
+  e.ball.pos.set(goal.x - 2.52, CONFIG.ball.radius, 0);
+  tackler.pos.set(goal.x - 3, 0, 1.85);
+  resolveTackle(e, tackler, "tackle_stand");
+  assert.equal(e.tacticalStats.fouls, 1);
+  assert.equal(e.rules.pendingRestart?.kind, "penalty",
+    "an attacking-box foul is a penalty; ownGoal-relative box logic gave a free kick");
+  assert.equal(e.rules.pendingRestart?.team, carrier.team);
+  e.dispose();
+});
+
+test("keeper faces the play while shuffling, not the goal line", () => {
+  const e = fresh(914);
+  const gk = e.players[0];
+  // Ball in front of the keeper's goal, wide; keeper displaced to the far post.
+  e.ball.release();
+  e.ball.pos.set(-8, CONFIG.ball.radius, 7);
+  e.ball.vel.set(0, 0, 0);
+  gk.pos.set(-18, 0, -1.5); gk.facing = 0; gk.vel.set(0, 0, 0); gk.speed = 0;
+  const quiet = console.log; console.log = () => {};
+  try { for (let i = 0; i < 30; i++) e.step(1 / 60); } finally { console.log = quiet; }
+  const toBall = new THREE.Vector3(e.ball.pos.x - gk.pos.x, 0, e.ball.pos.z - gk.pos.z);
+  const ballYaw = Math.atan2(-toBall.z, toBall.x);
+  const velYaw = Math.atan2(-gk.vel.z, gk.vel.x);
+  assert(gk.speed > 0.5, `keeper should be shuffling, speed ${gk.speed.toFixed(2)}`);
+  assert(Math.abs(yawDelta(gk.facing, velYaw)) > 0.35, "test setup: travel is not toward the ball");
+  assert(Math.abs(yawDelta(gk.facing, ballYaw)) < 0.35,
+    `keeper must watch the ball: facing ${gk.facing.toFixed(2)} ball ${ballYaw.toFixed(2)} vel ${velYaw.toFixed(2)}`);
+  e.dispose();
 });
 
 console.log(`\n${count} DUEL / DETERMINISM REGRESSIONS PASSED`);

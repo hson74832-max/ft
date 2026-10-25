@@ -11,7 +11,7 @@ import { planNamedPass, recordPass } from "./passPlanning";
 import { setHumanPlayer } from "./roster";
 import { releaseRestartToTaker } from "./restarts";
 import {
-  evaluateTackle, isTackleAction, spillDirection, tackleReach, tackleRecovery,
+  evaluateTackle, isTackleAction, spillDirection, tackleReach,
   type TackleOutcome,
 } from "./tackles";
 import type { EnginePlayer } from "./types";
@@ -73,6 +73,23 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       if (!ownerIsMe) break;
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
       if (!plan) {
+        // A clearance needs no receiver: a defender under pressure in his own third
+        // hoists the ball away instead of being dispossessed trying to thread a short
+        // ball out of the swarm. `passTo === undefined` is what marks the decision as a
+        // clearance — every real pass names a receiver — so a cancelled named pass keeps
+        // its old behaviour.
+        const clearanceGoal = e.ai.ownGoal(p.team, e.rules.half);
+        const clearanceDeep = (p.pos.x - clearanceGoal.x) * e.ai.attackSign(p.team, e.rules.half)
+          < CONFIG.pitch.length * 0.35;
+        if (action === "pass_long" && clearanceDeep && pk?.target && pk.passTo === undefined) {
+          releaseToKick(e, p);
+          // Lofted so it clears the bodies in front of him rather than rolling into them.
+          e.ball.kick(dirTo(pk.target), CONFIG.player.kickPower.clear, 0.32);
+          ballReleasedByAction = true;
+          if (!activeRestart) e.openPlayKickCount++;
+          e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} clearance by #${p.idx} ${p.role}`, p.team);
+          break;
+        }
         p.decisionReason = "PASS CANCELLED · no valid same-team onside receiver in range";
         e.rules.emit("POSSESSION", `${action} cancelled: no valid named receiver`, p.team);
         break;
@@ -125,10 +142,10 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const stats = e.tacticalStats;
       stats.tacklesAttempted++;
       tackleDetail = quality.reason;
-      // Recovery is paid for the attempt. A foul costs extra, and a slide that
-      // misses still has to get up before it can challenge again.
-      p.tackleRecoveryT = Math.max(p.tackleRecoveryT,
-        tackleRecovery(action) + (quality.outcome === "foul" ? 0.45 : 0));
+      // Recovery was armed when the challenge started (`beginTackle`); a foul costs
+      // extra on top. Re-arming the full duration here would double the window the
+      // duel state machine documents as starting with the attempt.
+      if (quality.outcome === "foul") p.tackleRecoveryT = Math.max(p.tackleRecoveryT, 0.45);
 
       if (carrierIdx === null && quality.ballDist < tackleReach(action)
         && quality.score >= CONFIG.tackle.spillScore) {
@@ -180,8 +197,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         startAction(e, carrier, "stumble");
         e.rules.emit("FOUL", `Foul by ${p.team === 0 ? "RED" : "BLUE"} ${action} · ${quality.reason}`, p.team);
         if (e.foulsOn) {
-          const ownGoal = e.ai.ownGoal(carrier.team, e.rules.half);
-          const inBox = Math.abs(carrier.pos.x - ownGoal.x) < 5.5 && Math.abs(carrier.pos.z) < 6.2;
+          // A foul on the carrier inside the box he is ATTACKING is a penalty; the
+          // old test used the carrier's own goal, so every foul in the attacking box
+          // became a free kick and no penalty could ever be awarded.
+          const attackGoal = e.ai.goalPos(carrier.team, e.rules.half);
+          const inBox = Math.abs(carrier.pos.x - attackGoal.x) < 5.5 && Math.abs(carrier.pos.z) < 6.2;
           e.ball.pos.set(carrier.pos.x, CONFIG.ball.radius, carrier.pos.z);
           e.ball.vel.set(0, 0, 0);
           e.ball.release();

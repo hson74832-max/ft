@@ -29,6 +29,7 @@ export interface TackleQuality {
   lateRatio: number;
   staleTarget: boolean;
   protectedCarrier: boolean;
+  mistimed: boolean;
   ballDist: number;
   carrierDist: number;
   elapsed: number;
@@ -88,6 +89,17 @@ export function carrierIsProtected(e: MatchHost): boolean {
   return idx !== null && (e.players[idx]?.tackleProtectionT ?? 0) > 0;
 }
 
+/**
+ * A keeper holding the ball is not a tackleable carrier: the ball is in his hands,
+ * not at his feet. The only exception is a keeper playing a deliberate back-pass
+ * with his feet (`handsRestrictedTeam`), which is an ordinary challenge.
+ */
+export function keeperHasBallInHands(e: MatchHost): boolean {
+  const idx = e.ball.possessedBy;
+  const carrier = idx !== null ? e.players[idx] : null;
+  return !!carrier && carrier.role === "GK" && e.ball.handsRestrictedTeam !== carrier.team;
+}
+
 /** Freeze the challenge at action start; a delayed or altered contact frame is judged late. */
 export function beginTackle(e: MatchHost, p: EnginePlayer, action: TackleAction): void {
   const meta = getClip(action);
@@ -136,7 +148,10 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   const elapsed = challenge ? Math.max(0, e.clock - challenge.startedAt) : idealContact + 1;
   const lateRatio = THREEClamp((elapsed - idealContact) / Math.max(0.12, idealContact), 0, 1.5);
   const staleTarget = !!challenge && challenge.targetIdx !== null && challenge.targetIdx !== carrierIdx;
-  const protectedCarrier = !!carrier && (carrier.tackleProtectionT ?? 0) > 0;
+  // The keeper gathering the ball mid-challenge makes the target untouchable, exactly
+  // like a carrier inside the post-tackle protection window.
+  const keeperCarrier = !!carrier && carrier.role === "GK" && e.ball.handsRestrictedTeam !== carrier.team;
+  const protectedCarrier = keeperCarrier || (!!carrier && (carrier.tackleProtectionT ?? 0) > 0);
   const approachGain = challenge ? challenge.startBallDist - ballDist : 0;
   const speedDenom = Math.max(1, CONFIG.player.sprintSpeed);
 
@@ -162,21 +177,25 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   const heavyContact = hostile && carrierDist <= bodyReach;
   const blindside = frontDot < -0.35;
   const late = staleTarget || lateRatio > 0.45;
+  // Contact timing. The contact frame always fires at the clip's own contact frame, so
+  // a challenge is mistimed when that frame lands with the body on the carrier but the
+  // ball outside reach — the defender hit the man, not the ball. A small tolerance over
+  // the reach keeps a legitimate toe-poke that simply stops short from being a foul.
+  const mistimed = heavyContact && ballDist > reach * 1.6;
 
   let outcome: TackleOutcome = "miss";
   if (ballFirst && score >= CONFIG.tackle.cleanScore) outcome = "clean";
   else if (ballFirst && score >= CONFIG.tackle.spillScore) outcome = "spill";
-  else if (heavyContact && (score < CONFIG.tackle.foulScore || blindside
-    || (action === "tackle_slide" && late))) outcome = "foul";
+  else if (heavyContact && !keeperCarrier && (mistimed || score < CONFIG.tackle.foulScore || blindside || late)) outcome = "foul";
 
   const reason = `q=${score.toFixed(2)} ${action} · ball ${ballDist.toFixed(2)}m/${reach.toFixed(2)}m`
     + ` · face ${facingDot.toFixed(2)} · front ${frontDot.toFixed(2)}`
     + ` · t ${elapsed.toFixed(2)}/${idealContact.toFixed(2)}${staleTarget ? " · stale" : ""}`
-    + `${protectedCarrier ? " · protected" : ""}`;
+    + `${protectedCarrier ? " · protected" : ""}${mistimed ? " · mistimed contact" : ""}`;
 
   return {
     score, outcome, ballFirst, heavyContact, facingDot, frontDot, lateRatio,
-    staleTarget, protectedCarrier, ballDist, carrierDist, elapsed, idealContact, reason,
+    staleTarget, protectedCarrier, mistimed, ballDist, carrierDist, elapsed, idealContact, reason,
   };
 }
 

@@ -348,6 +348,13 @@ export class TeamTactics {
         candidates.push({ target: pos(stage, side * channelWidth), mode: far ? "far half-space run" : "near channel run", preference: 0.25 + (far && Math.abs(anchor.z) > 4 ? 0.08 : 0), runType: "spin" });
         candidates.push({ target: pos(Math.min(u + (keeperBuilding ? T.keeperRunnerLead - 3 : 3.5), line - 0.8), side * T.farSideMaxWidth), mode: side < 0 ? "left diagonal support" : "right diagonal support", preference: 0.04, runType: "drive" });
         if (goalDistance < 9) candidates.push({ target: pos(Math.min(halfL - 2.8, line - 0.7), side * 2.2), mode: side < 0 ? "left box arrival" : "right box arrival", preference: 0.24, runType: "spin" });
+        // Cross target: with the ball wide in the final third the runner attacks the
+        // middle of the box (still onside) instead of holding the half-space outside
+        // it, so the wide carrier has someone to cross to and not only a square ball.
+        if (Math.abs(anchor.z) > T.halfSpaceWidth && u > halfL - 18) {
+          candidates.push({ target: pos(Math.min(halfL - 3.0, line - 0.8), side * 2.4),
+            mode: `${side < 0 ? "near" : "far"} post cross target`, preference: 0.34, runType: "spin" });
+        }
         // Spin in behind: attack the space just inside the offside line, where the
         // through-ball is available. Only worth it when there is legal room.
         if (lineRoom > 2.5) {

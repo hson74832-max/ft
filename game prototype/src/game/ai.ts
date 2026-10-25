@@ -321,10 +321,19 @@ export class AIController {
       let action: string | null = null;
       if (dist < 1.5 && this.canTackle(p, snap, "tackle_stand")) action = "tackle_stand";
       else if (dist < 2.55 && dist > 1.4 && p.style.risk > 1.02 && this.canTackle(p, snap, "tackle_slide")) action = "tackle_slide";
+      // Press the carrier's NEXT position, and when the defender has been played past
+      // (he is ball-side of the carrier) cut back to the goal side instead of trailing
+      // him — that is the run that ended up behind a winger at the touchline with the
+      // centre open. A defender who is already goal-side presses straight at the ball.
+      const pressPoint = carrier.pos.clone().addScaledVector(carrier.vel, 0.2);
+      if ((p.pos.x - carrier.pos.x) * atkSign > 0.2) {
+        const toOwn = ownGoal.clone().sub(carrier.pos).setY(0).normalize();
+        pressPoint.addScaledVector(toOwn, p.role === "DEF" ? 1.2 : 0.5);
+      }
       return this.store(p.idx, {
-        moveTarget: carrier.pos.clone(), desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing,
+        moveTarget: pressPoint, desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing,
         action, actionTarget: carrier.pos.clone(), noveltyKey: "press-carrier",
-        reason: action ? `${action} · press trigger` : `Press carrier · ${dist.toFixed(1)}m`,
+        reason: action ? `${action} · press trigger` : `Press carrier · goal-side · ${dist.toFixed(1)}m`,
         utilities: { press: 1, distance: dist }, urgent: true,
       });
     }
@@ -366,12 +375,18 @@ export class AIController {
 
     // Every off-ball opponent gets a unique mark assignment where practical.
     if (markedOpponent && d(p.pos, markedOpponent.pos) < CONFIG.ai.markDistance + 3) {
-      const goalSide = markedOpponent.pos.clone().lerp(ownGoal, 0.24);
+      // Mark where the attacker is going, and always on the goal side of him: a
+      // defender who runs at the attacker's current position trails the ball and ends
+      // up between the attacker and the halfway line instead of between him and goal.
+      const goalSide = markedOpponent.pos.clone().addScaledVector(markedOpponent.vel, 0.35)
+        .lerp(ownGoal, 0.24);
+      const beaten = ownU(p.pos) > ownU(markedOpponent.pos) + 0.2;
+      if (beaten) goalSide.lerp(ownGoal, 0.14);
       return this.store(p.idx, {
-        moveTarget: goalSide, desiredSpeed: 4.1 * p.style.pressing, action: null,
+        moveTarget: goalSide, desiredSpeed: beaten ? CONFIG.ai.maxSprint : 4.1 * p.style.pressing, action: null,
         noveltyKey: `mark:${markedOpponent.idx}`,
-        reason: `Track ${markedOpponent.role} #${markedOpponent.idx} · ${d(p.pos, markedOpponent.pos).toFixed(1)}m`,
-        utilities: { mark: 0.85, press: 0.25 }, urgent: false,
+        reason: `Track ${markedOpponent.role} #${markedOpponent.idx} · goal-side${beaten ? " · recovering" : ""} · ${d(p.pos, markedOpponent.pos).toFixed(1)}m`,
+        utilities: { mark: 0.85, press: 0.25 }, urgent: beaten,
       });
     }
     if (fieldMates.length > 1) {
@@ -433,7 +448,8 @@ export class AIController {
     const lineU = this.defensiveLineU(snap, p.team);
 
     type Option = { mate: WorldPlayer; target: THREE.Vector3; id: string; key: string; lane: number; space: number;
-      gain: number; score: number; purpose: NonNullable<AIDecision["passPurpose"]>; safe: boolean; crossesLine: boolean };
+      gain: number; score: number; purpose: NonNullable<AIDecision["passPurpose"]>; safe: boolean; crossesLine: boolean;
+      crossBall: boolean };
     const options: Option[] = [];
     for (const mate of mates) {
       if (this.isOffsidePosition(mate.pos, snap.ballPos, p.team, snap)) continue;
@@ -469,9 +485,17 @@ export class AIController {
       const backward = gain < -1.5;
       // Beating the last line is progression even if the pass itself is short.
       const crossesLine = target.x * sign > lineU + 0.5 && gain > 1.5;
+      // Delivery intent. A wide carrier in the attacking third has a cross on when a
+      // teammate attacks the box; a long ball across the pitch is a switch of play.
+      // Neither was ever scored, so the AI only ever played the square ball infield.
+      const wideCarrier = Math.abs(p.pos.z) > T.halfSpaceWidth
+        && p.pos.x * sign > CONFIG.pitch.length / 2 - 16;
+      const boxTarget = target.x * sign > CONFIG.pitch.length / 2 - 10 && Math.abs(target.z) < 8;
+      const crossBall = wideCarrier && boxTarget && currentDistance > 8;
+      const longSwitch = Math.abs(target.z - p.pos.z) > 12 && id === "pass_long" && gain > -2;
       const purpose: Option["purpose"] = backward && (mate.role === "GK" || job?.job === "pivot" || Math.abs(target.z) < T.pivotHalfWidth + 0.5)
         ? "recycle"
-        : id === "pass_through" || crossesLine ? "penetrate"
+        : id === "pass_through" || crossesLine || crossBall ? "penetrate"
           : Math.abs(target.z - p.pos.z) > 6 && gain > -2 ? "switch" : "progress";
       const safe = lane >= T.minSafeLane && space >= T.minSafeReceiverSpace;
       const key = `pass:${mate.idx}`;
@@ -482,14 +506,19 @@ export class AIController {
         + (crossesLine && safe ? 0.16 : 0)
         + (purpose === "penetrate" && safe ? 0.18 : 0)
         + (purpose === "switch" && safe ? 0.10 : 0)
-        - crowd * 0.17 - (space < 1.5 ? 0.35 : 0) - (lane < 0.35 ? 0.4 : 0)
-        - novelty(key) * 0.35 + noise(0.16) + jitter(key);
+        // A cross is aimed at a marked man by design: the box being occupied is the
+        // point of the ball, so a cross is scored on its delivery lane and not on the
+        // receiver's crowding. Ground passes keep the old penalties.
+        - crowd * 0.17 - (crossBall ? 0 : (space < 1.5 ? 0.35 : 0)) - (lane < 0.35 ? 0.4 : 0)
+        - novelty(key) * 0.35 + noise(0.16) + jitter(key)
+        + (crossBall ? 0.16 + (lane > 0.4 ? 0.2 : 0) : 0)
+        + (longSwitch && lane > T.minSafeLane ? 0.12 : 0);
       // Circulation with no threat: a square ball to a congested area costs more in
       // transition, when we are meant to be attacking the other way.
       if (Math.abs(gain) < 2 && Math.abs(target.z - p.pos.z) < 4 && !pressed) score -= weights.hazard * 0.9;
       if (returnPass && !pressed) score -= T.returnPassPenalty;
       if (clearChance) score -= 0.35;
-      options.push({ mate, target, id, key, lane, space, gain, score, purpose, safe, crossesLine });
+      options.push({ mate, target, id, key, lane, space, gain, score, purpose, safe, crossesLine, crossBall });
     }
 
     const dribble = this.chooseDribbleLane(p, goalDir, field, mates,
@@ -525,6 +554,27 @@ export class AIController {
       runTrigger: trigger?.active ? 1 : 0 };
     const passOptions = options.map((o) => ({ receiver: o.mate.idx, lane: o.lane, space: o.space, gain: o.gain, score: o.score, purpose: o.purpose }));
     const runsOn = plan ? `${trigger?.active ? "RUNS ON" : "runs off"}${plan.assignments.size ? ` · ${[...plan.assignments.values()].filter((a) => a.runType === "spin" || a.runType === "drive").length} running` : ""}` : "no plan";
+
+    // Own-box safety valve. A defender who wins the ball deep and is surrounded must
+    // not dribble or thread a square ball into the swarm: with no outlet that is
+    // genuinely safe he clears it long and out of danger. `pass_long` with no named
+    // receiver is resolved at the contact frame as a clearance kick. A back-pass to the
+    // keeper from inside your own box under the press is not a safe outlet — it is the
+    // ball the swarm wants — so the lane/space tests decide, not the pass purpose.
+    const ownGoalPos = this.ownGoal(p.team, snap.half);
+    const depthFromOwnGoal = (p.pos.x - ownGoalPos.x) * sign;
+    const inOwnBox = Math.abs(p.pos.x - ownGoalPos.x) < 5.8 && Math.abs(p.pos.z) < 6.2;
+    const safeOutlet = options.some((o) => o.lane >= T.minSafeLane && o.space >= T.minSafeReceiverSpace
+      && !(o.mate.role === "GK" && inOwnBox));
+    const swarmed = pressure < T.pressureDistance;
+    if ((inOwnBox || depthFromOwnGoal < CONFIG.pitch.length * 0.35) && swarmed && !safeOutlet) {
+      const escape = new THREE.Vector3(goal.x, 0,
+        THREE.MathUtils.clamp(p.pos.z * 0.2 + (p.pos.z >= 0 ? -2.5 : 2.5), -6.5, 6.5));
+      return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: "pass_long", actionTarget: escape,
+        noveltyKey: "clearance",
+        reason: `CLEARANCE · ${inOwnBox ? "own box" : "deep"} · swarmed ${pressure.toFixed(1)}m · no safe outlet · ${depthFromOwnGoal.toFixed(1)}m from own goal`,
+        utilities, urgent: true };
+    }
 
     if (shotId && inRange && shotLane > T.shotPartialLane
       && (clearChance || (edgeChance && quality > 0.14) || shoot > Math.max(best?.score ?? -1, carry) + 0.04)) {
@@ -978,6 +1028,9 @@ export class AIController {
     if (!this.can(p, clip)) return false;
     const carrier = snap.players.find((q) => q.idx === snap.ballOwner);
     if (!carrier || carrier.team === p.team || (carrier.tackleProtectionT ?? 0) > 0) return false;
+    // A keeper with the ball in his hands cannot be challenged; `startAction` refuses
+    // it too, so the AI must not keep selecting a challenge that can never start.
+    if (carrier.role === "GK") return false;
     const dx = snap.ballPos.x - p.pos.x, dz = snap.ballPos.z - p.pos.z;
     const len = Math.hypot(dx, dz);
     if (len < 0.01) return false;
@@ -988,8 +1041,10 @@ export class AIController {
     const frontDot = clen > 0.01
       ? (Math.cos(carrier.facing) * cdx - Math.sin(carrier.facing) * cdz) / clen
       : 0;
-    // A slide from behind is both unrealistic and heavily penalised at contact.
-    return !(clip === "tackle_slide" && frontDot < -0.35);
+    // A challenge from behind is unrealistic and is a foul at contact. Only the slide
+    // was gated here, so defenders kept committing standing challenges from the blind
+    // side that could never be won cleanly and only ever gave away fouls.
+    return frontDot >= -0.35;
   }
 
   commitDecision(idx: number, decision: AIDecision) {

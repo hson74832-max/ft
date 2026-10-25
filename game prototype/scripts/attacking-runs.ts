@@ -212,53 +212,68 @@ test("a progressive forward pass beats a safe square ball", () => {
 // 4. Match level: runs happen, and possession progresses
 // ============================================================
 test("full match: runs, run variety and progressive intent", () => {
-  const engine = new MatchEngine(headlessEngineCanvas(), { seed: 1234, headless: true, spectator: true });
+  // Three seeds, aggregated: one match's penetrating-pass share swings between 5% and
+  // 18% with identical code, so a single seed was measuring luck, not behaviour.
+  const seeds = [1234, 777, 42];
   const runTypes: Record<string, number> = {};
   const episodes: { peak: number; gain: number; sign: number; startX: number }[] = [];
   const active = new Map<number, { peak: number; sign: number; startX: number }>();
-  let offBallFrames = 0, movingFrames = 0, triggeredFrames = 0, planFrames = 0;
-  for (let frame = 0; frame < 60 * 300; frame++) {
-    engine.step(1 / 60);
-    if (engine.rules.phase === "FULLTIME") break;
-    if (!engine.rules.live || engine.rules.pendingRestart || engine.ball.possessedBy === null) { active.clear(); continue; }
-    const carrier = engine.players[engine.ball.possessedBy];
-    const plan = engine.ai.tactics.current(carrier.team);
-    if (!plan) continue;
-    planFrames++; if (plan.trigger.active) triggeredFrames++;
-    const sign = attackDirection(carrier.team, engine.rules.half);
-    for (const p of engine.players.filter((q) => q.team === carrier.team && q.idx !== carrier.idx && q.role !== "GK")) {
-      offBallFrames++;
-      const decision = engine.ai.lastDecision.get(p.idx);
-      const runType = decision?.runType ?? "none";
-      runTypes[runType] = (runTypes[runType] ?? 0) + 1;
-      if (p.moveTarget.distanceTo(p.pos) > 2.5) movingFrames++;
-      const running = runType === "spin" || runType === "drive";
-      const current = active.get(p.idx);
-      if (running) {
-        if (!current) active.set(p.idx, { peak: p.speed, sign, startX: p.pos.x * sign });
-        else current.peak = Math.max(current.peak, p.speed);
-      } else if (current) {
-        episodes.push({ peak: current.peak, gain: (p.pos.x - current.startX) * sign, sign, startX: current.startX });
-        active.delete(p.idx);
+  let finished = 0, offBallFrames = 0, movingFrames = 0, triggeredFrames = 0, planFrames = 0;
+  let passesTotal = 0, penetratingTotal = 0, recyclesTotal = 0, shotsTotal = 0;
+  for (const seed of seeds) {
+    const engine = new MatchEngine(headlessEngineCanvas(), { seed, headless: true, spectator: true });
+    // Budget in wall time, not match time: set pieces and foul restarts freeze play, so a
+    // 240 s match needs ~300 s of frames.
+    for (let frame = 0; frame < 60 * 420; frame++) {
+      engine.step(1 / 60);
+      if (engine.rules.phase === "FULLTIME") break;
+      if (!engine.rules.live || engine.rules.pendingRestart || engine.ball.possessedBy === null) { active.clear(); continue; }
+      const carrier = engine.players[engine.ball.possessedBy];
+      const plan = engine.ai.tactics.current(carrier.team);
+      if (!plan) continue;
+      planFrames++; if (plan.trigger.active) triggeredFrames++;
+      const sign = attackDirection(carrier.team, engine.rules.half);
+      for (const p of engine.players.filter((q) => q.team === carrier.team && q.idx !== carrier.idx && q.role !== "GK")) {
+        offBallFrames++;
+        const decision = engine.ai.lastDecision.get(p.idx);
+        const runType = decision?.runType ?? "none";
+        runTypes[runType] = (runTypes[runType] ?? 0) + 1;
+        if (p.moveTarget.distanceTo(p.pos) > 2.5) movingFrames++;
+        const running = runType === "spin" || runType === "drive";
+        const current = active.get(p.idx);
+        if (running) {
+          if (!current) active.set(p.idx, { peak: p.speed, sign, startX: p.pos.x * sign });
+          else current.peak = Math.max(current.peak, p.speed);
+        } else if (current) {
+          episodes.push({ peak: current.peak, gain: (p.pos.x - current.startX) * sign, sign, startX: current.startX });
+          active.delete(p.idx);
+        }
       }
     }
+    for (const current of active.values()) episodes.push({ peak: current.peak, gain: 0, sign: current.sign, startX: current.startX });
+    active.clear();
+    if (engine.rules.phase === "FULLTIME") finished++;
+    passesTotal += engine.tacticalStats.passes;
+    penetratingTotal += engine.tacticalStats.penetratingPasses;
+    recyclesTotal += engine.tacticalStats.recycles;
+    shotsTotal += engine.tacticalStats.shots;
+    const seedShare = engine.tacticalStats.penetratingPasses / Math.max(1, engine.tacticalStats.passes) * 100;
+    console.log(`  seed ${seed}: ${engine.rules.score.join(":")} · passes ${engine.tacticalStats.passes} (${seedShare.toFixed(0)}% penetrating) · shots ${engine.tacticalStats.shots}`);
+    engine.dispose();
   }
-  for (const current of active.values()) episodes.push({ peak: current.peak, gain: 0, sign: current.sign, startX: current.startX });
   const sustained = episodes.filter((run) => run.gain > 1.5 || run.peak > 4);
   const share = (k: string) => (runTypes[k] ?? 0) / Math.max(1, offBallFrames) * 100;
-  const stats = engine.tacticalStats;
-  const penetrateShare = stats.penetratingPasses / Math.max(1, stats.passes) * 100;
-  console.log(`  match ${engine.rules.score.join(":")} · passes ${stats.passes} (${penetrateShare.toFixed(0)}% penetrating, ${(stats.recycles / Math.max(1, stats.passes) * 100).toFixed(0)}% recycled) · shots ${stats.shots}`);
-  console.log(`  off-ball runs ${sustained.length} in 5 min · run share spin ${share("spin").toFixed(0)}% drive ${share("drive").toFixed(0)}% check ${share("check").toFixed(0)}% · moving ${(movingFrames / offBallFrames * 100).toFixed(0)}% · trigger ${(triggeredFrames / planFrames * 100).toFixed(0)}%`);
-  assert.equal(engine.rules.phase, "FULLTIME", "match did not finish");
+  const penetrateShare = penetratingTotal / Math.max(1, passesTotal) * 100;
+  console.log(`  aggregate ${seeds.length} matches · passes ${passesTotal} (${penetrateShare.toFixed(0)}% penetrating, ${(recyclesTotal / Math.max(1, passesTotal) * 100).toFixed(0)}% recycled) · shots ${shotsTotal}`);
+  console.log(`  off-ball runs ${sustained.length} · run share spin ${share("spin").toFixed(0)}% drive ${share("drive").toFixed(0)}% check ${share("check").toFixed(0)}% · moving ${(movingFrames / offBallFrames * 100).toFixed(0)}% · trigger ${(triggeredFrames / planFrames * 100).toFixed(0)}%`);
+  assert.equal(finished, seeds.length, "a match did not finish");
   assert(share("spin") > 5, "no runs in behind during the match");
   assert(share("drive") > 1, "no driving runs during the match");
   assert(share("check") > 5, "no checking runs during the match");
-  assert(sustained.length >= 12, `too few committed runs: ${sustained.length}`);
+  assert(sustained.length >= 12 * seeds.length, `too few committed runs: ${sustained.length}`);
   assert(movingFrames / offBallFrames > 0.4, "off-ball players are still mostly static");
   assert(penetrateShare >= 10, `only ${penetrateShare.toFixed(1)}% of passes were penetrative`);
-  assert(stats.shots > 0 && stats.passes > 0, JSON.stringify(stats));
-  engine.dispose();
+  assert(shotsTotal > 0 && passesTotal > 0, `${shotsTotal} shots / ${passesTotal} passes`);
 });
 
 console.log(`\n${passed} ATTACKING-RUN REGRESSIONS PASSED`);

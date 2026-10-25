@@ -81,10 +81,10 @@ export class MatchEngine {
   aimRaw = false;
   showAIDebug = true;
   showAnimOverlay = true;
-  // Bad challenges are always punished by recovery/miss/foul events. Enabling
-  // this additionally turns severe contact into free kicks/penalties; keeping
-  // it off by default preserves the prototype's uninterrupted 4-minute flow.
-  foulsOn = false;
+  // Bad challenges are always punished by recovery/miss/foul events. This turns a
+  // foul into a real free kick / penalty and stops play for the restart; it can still
+  // be switched off from the settings panel.
+  foulsOn = true;
   keys = new Set<string>();
   passCharge = 0; shootCharge = 0;
   chargingPass = false; chargingShoot = false;
