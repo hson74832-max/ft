@@ -53,6 +53,21 @@ export const CONFIG = {
     turnRate: 9.5,          // rad/s body reorientation
     jumpHeight: 0.42,       // m countermovement jump (0.33–0.50)
     controlRadius: 0.75, tackleRadius: 1.35, interceptRadius: 1.0,
+    // === ANALOG MOVEMENT FEEL ===
+    // First-step burst: peak acceleration out of a standstill is higher than the
+    // steady-state 5 m/s² because the drive phase is explosive; the rate falls back
+    // to `accel` once the player is moving.
+    accelBurst: 1.45,       // × accel below walk speed
+    accelBurstSpeed: 2.0,   // m/s — burst applies under this speed
+    // Cutting with the ball costs acceleration proportional to how square the turn
+    // is: 0 = straight on, 1 = a full 180° cut.
+    cutAccelPenalty: 0.45,
+    cutPlantSpeed: 1.2,     // m/s — below this the player plants and turns on the spot
+    // Contextual movement: a player shielding the ball, or moving against his body
+    // orientation, cannot travel at full speed.
+    shieldSpeedFactor: 0.62,
+    strafeSpeedFactor: 0.82,
+    strafeAngle: 1.05,      // rad — movement this far off the body counts as a strafe
     maxTrapSpeed: 14,       // m/s — fastest ground ball a player can cushion dead
     // === REAL DATA: BALL SPEED BY ACTION (m/s) ===
     kickPower: {
@@ -103,6 +118,12 @@ export const CONFIG = {
     gkCatchSpeed: 16,          // m/s — above this a clean contact becomes a parry
     gkSetShuffleSpeed: 2.0,    // m/s — lateral side-step while set for a shot
     gkOffBalancePenalty: 0.3,  // m of dive reach lost per m/s of lateral speed at contact
+    // Aggressive hands at a dribbler's feet. A carrier who brings the ball inside
+    // this range in the keeper's own box can be smothered (hands) rather than
+    // tackled: the keeper commits the body, not a foot.
+    gkSmotherRush: 4.6,        // m — a dribbler this close to the keeper triggers the rush
+    gkSmotherRange: 1.55,      // m — ball distance at which the hands close on it
+    gkSmotherHeight: 1.1,      // m — hands cannot claim a ball above this
     // Angle/near-post positioning. `gkRushLine` is a hard safety bound; the
     // keeper normally occupies an arc closer to the goal line and only advances
     // into it when the ball is close enough to narrow the shooting angle.
@@ -203,6 +224,17 @@ export const CONFIG = {
     } as Record<string, { gain: number; safety: number; hazard: number }>,
     runnerRolePreference: { FWD: 0, MID: 1.5, DEF: 4, GK: 50 } as Record<string, number>,
     pivotRolePreference: { DEF: 0, MID: 0.8, FWD: 4, GK: 50 } as Record<string, number>,
+    // ---- Free-kick set-up ------------------------------------------------
+    // A free kick is the one dead ball a defending side has time to organise
+    // for. The wall stands on the ball→near-post line; everyone else drops
+    // goal-side of the ball into a compact block instead of keeping the
+    // attacking shape they were in when the foul was committed.
+    fkWallDistance: 3.2,        // m — wall distance from the ball (small-sided scale)
+    fkWallCloseRange: 17,       // m — a wall is posted inside this range of goal
+    fkWallMinHeight: 0.6,       // rad — beyond this angle from goal, no wall (wide)
+    fkBlockDrop: 3.0,           // m — goal-side of the ball the block holds
+    fkBoxGuard: 2.4,            // m — how tightly the box is screened behind the wall
+    penaltyEdgeDrop: 4.2,       // m — the defending block sits this far off the box edge
   },
   anim: {
     crossfade: 0.12, actionCrossfade: 0.07,

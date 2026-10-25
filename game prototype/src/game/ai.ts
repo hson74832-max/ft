@@ -18,7 +18,43 @@ export interface PlayerStyle {
   finesseSide: -1 | 1;
 }
 
+/**
+ * Intelligence: how well a player reads the game. These drive *decisions and
+ * positioning* — reaction gating, interception timing, offside discipline,
+ * off-ball movement — and nothing else.
+ */
+export interface PlayerIntelligence {
+  anticipation: number;       // reading the next action; intercepting / loose balls
+  decisionMaking: number;     // choosing between pass / shoot / hold under pressure
+  concentration: number;      // holding the level across a long match
+  focus: number;              // attention in the current moment
+  scanning: number;           // how often and how well he checks his surroundings
+  tacticalAwareness: number;  // shape, triggers, pressing lanes, the offside line
+  offBallIntelligence: number;// quality of movement without the ball
+  riskAssessment: number;     // willingness AND judgement of high-risk actions
+}
+
+/**
+ * Mentality: how consistently the ability is delivered. These drive *effort,
+ * consistency and the response to pressure* — never technique or positioning
+ * quality directly.
+ */
+export interface PlayerMentality {
+  determination: number;        // persistence when losing or playing badly
+  leadership: number;           // organising / driving the unit
+  teamwork: number;             // sacrificing for the team shape and press
+  attackingWorkRate: number;    // effort going forward
+  defensiveWorkRate: number;    // effort recovering and pressing
+  consistency: number;          // low match-to-match / moment-to-moment variance
+  pressureHandling: number;     // performance under press and late-game tension
+  bigMatchTemperament: number;  // performance when the match is on the line
+  discipline: number;           // avoiding reckless fouls and positional indiscipline
+  resilience: number;           // recovering after mistakes / conceding
+}
+
 export interface PlayerAttributes {
+  intelligence: PlayerIntelligence;
+  mentality: PlayerMentality;
   physical: {
     acceleration: number; sprintSpeed: number; agility: number; balance: number;
     jumping: number; stamina: number; strength: number; physicalContact: number;
@@ -47,6 +83,8 @@ export interface PlayerAttributes {
 
 const ROLE_ATTRIBUTES: Record<string, PlayerAttributes> = {
   GK: {
+    intelligence: { anticipation: 78, decisionMaking: 74, concentration: 80, focus: 82, scanning: 70, tacticalAwareness: 84, offBallIntelligence: 55, riskAssessment: 66 },
+    mentality: { determination: 78, leadership: 72, teamwork: 74, attackingWorkRate: 45, defensiveWorkRate: 80, consistency: 78, pressureHandling: 80, bigMatchTemperament: 78, discipline: 82, resilience: 78 },
     physical: { acceleration: 58, sprintSpeed: 55, agility: 62, balance: 68, jumping: 74, stamina: 62, strength: 78, physicalContact: 74, aggression: 56, composure: 74, reactions: 84 },
     ballControl: { dribbling: 45, tightPossession: 52, runningPossession: 45, groundReceiving: 60, highBallReceiving: 58 },
     passing: { shortGroundPassing: 62, longGroundPassing: 70, crossing: 40, curve: 45, freeKick: 45, corner: 40, vision: 64, passPositioning: 66 },
@@ -55,6 +93,8 @@ const ROLE_ATTRIBUTES: Record<string, PlayerAttributes> = {
     goalkeeping: { diving: 84, handling: 82, kicking: 78, reflexes: 86, positioning: 84, catching: 84, parrying: 82, reach: 85 },
   },
   DEF: {
+    intelligence: { anticipation: 80, decisionMaking: 78, concentration: 82, focus: 80, scanning: 74, tacticalAwareness: 86, offBallIntelligence: 66, riskAssessment: 70 },
+    mentality: { determination: 82, leadership: 78, teamwork: 86, attackingWorkRate: 52, defensiveWorkRate: 84, consistency: 80, pressureHandling: 78, bigMatchTemperament: 78, discipline: 84, resilience: 80 },
     physical: { acceleration: 68, sprintSpeed: 70, agility: 66, balance: 76, jumping: 78, stamina: 75, strength: 84, physicalContact: 82, aggression: 80, composure: 74, reactions: 75 },
     ballControl: { dribbling: 62, tightPossession: 72, runningPossession: 64, groundReceiving: 75, highBallReceiving: 74 },
     passing: { shortGroundPassing: 75, longGroundPassing: 80, crossing: 62, curve: 65, freeKick: 60, corner: 60, vision: 72, passPositioning: 74 },
@@ -63,6 +103,8 @@ const ROLE_ATTRIBUTES: Record<string, PlayerAttributes> = {
     goalkeeping: { diving: 25, handling: 20, kicking: 45, reflexes: 30, positioning: 25, catching: 20, parrying: 25, reach: 30 },
   },
   MID: {
+    intelligence: { anticipation: 84, decisionMaking: 86, concentration: 82, focus: 84, scanning: 88, tacticalAwareness: 84, offBallIntelligence: 86, riskAssessment: 80 },
+    mentality: { determination: 82, leadership: 80, teamwork: 84, attackingWorkRate: 78, defensiveWorkRate: 76, consistency: 82, pressureHandling: 82, bigMatchTemperament: 80, discipline: 76, resilience: 82 },
     physical: { acceleration: 75, sprintSpeed: 75, agility: 81, balance: 79, jumping: 66, stamina: 84, strength: 69, physicalContact: 72, aggression: 69, composure: 82, reactions: 79 },
     ballControl: { dribbling: 81, tightPossession: 85, runningPossession: 81, groundReceiving: 85, highBallReceiving: 79 },
     passing: { shortGroundPassing: 85, longGroundPassing: 82, crossing: 77, curve: 81, freeKick: 76, corner: 77, vision: 87, passPositioning: 84 },
@@ -71,6 +113,8 @@ const ROLE_ATTRIBUTES: Record<string, PlayerAttributes> = {
     goalkeeping: { diving: 25, handling: 20, kicking: 45, reflexes: 30, positioning: 25, catching: 20, parrying: 25, reach: 30 },
   },
   FWD: {
+    intelligence: { anticipation: 88, decisionMaking: 82, concentration: 78, focus: 84, scanning: 84, tacticalAwareness: 78, offBallIntelligence: 88, riskAssessment: 86 },
+    mentality: { determination: 84, leadership: 72, teamwork: 68, attackingWorkRate: 86, defensiveWorkRate: 58, consistency: 76, pressureHandling: 78, bigMatchTemperament: 82, discipline: 68, resilience: 80 },
     physical: { acceleration: 85, sprintSpeed: 87, agility: 85, balance: 77, jumping: 75, stamina: 77, strength: 73, physicalContact: 72, aggression: 73, composure: 80, reactions: 83 },
     ballControl: { dribbling: 86, tightPossession: 83, runningPossession: 88, groundReceiving: 83, highBallReceiving: 80 },
     passing: { shortGroundPassing: 74, longGroundPassing: 69, crossing: 80, curve: 78, freeKick: 72, corner: 73, vision: 79, passPositioning: 76 },
@@ -118,6 +162,8 @@ export interface WorldSnap {
   ownerSince?: number;
   /** Clock time until which the team in possession is in its attacking transition window. */
   transitionUntil?: number;
+  /** Current scoreline, [team0, team1] — mentality reads the match state. */
+  score?: [number, number];
 }
 
 export interface AIDecision {
@@ -195,6 +241,8 @@ export class AIController {
   private failedKicks = new Map<number, { key: string; count: number }>();
   /** One decision stream per player: a human/spectator branch cannot shift teammates' noise. */
   private playerStreams = new Map<number, SeededRandom>();
+  /** Last time this player was involved in the play (carrier or named receiver). */
+  private lastInvolvement = new Map<number, number>();
 
   private streamFor(idx: number): SeededRandom {
     let stream = this.playerStreams.get(idx);
@@ -214,6 +262,7 @@ export class AIController {
     this.playerStreams.clear();
     this.gkRead.clear();
     this.failedKicks.clear();
+    this.lastInvolvement.clear();
   }
 
   /** A kick cancelled at its contact frame (no valid receiver by then). Re-deciding
@@ -305,6 +354,21 @@ export class AIController {
         positioning: rating(base.goalkeeping.positioning), catching: rating(base.goalkeeping.catching),
         parrying: rating(base.goalkeeping.parrying), reach: rating(base.goalkeeping.reach),
       },
+      // Sampled last on the same stream: the existing technical/physical/keeper
+      // ratings above keep the exact values they had before these groups existed.
+      intelligence: {
+        anticipation: rating(base.intelligence.anticipation), decisionMaking: rating(base.intelligence.decisionMaking),
+        concentration: rating(base.intelligence.concentration), focus: rating(base.intelligence.focus),
+        scanning: rating(base.intelligence.scanning), tacticalAwareness: rating(base.intelligence.tacticalAwareness),
+        offBallIntelligence: rating(base.intelligence.offBallIntelligence), riskAssessment: rating(base.intelligence.riskAssessment),
+      },
+      mentality: {
+        determination: rating(base.mentality.determination), leadership: rating(base.mentality.leadership),
+        teamwork: rating(base.mentality.teamwork), attackingWorkRate: rating(base.mentality.attackingWorkRate),
+        defensiveWorkRate: rating(base.mentality.defensiveWorkRate), consistency: rating(base.mentality.consistency),
+        pressureHandling: rating(base.mentality.pressureHandling), bigMatchTemperament: rating(base.mentality.bigMatchTemperament),
+        discipline: rating(base.mentality.discipline), resilience: rating(base.mentality.resilience),
+      },
     };
   }
 
@@ -341,15 +405,58 @@ export class AIController {
       ? p.attributes?.goalkeeping.reflexes ?? 75
       : p.attributes?.physical.reactions ?? 75;
     const reactionScale = THREE.MathUtils.clamp(1.5 - reactions / 150, 0.8, 1.2);
-    this.nextThink.set(p.idx, now + baseDelay * reactionScale * rng.range(0.72, 1.3));
+    const intelligence = p.attributes?.intelligence;
+    const mentality = p.attributes?.mentality;
+    // Intelligence decides how quickly the picture is turned into a choice: a good
+    // reader needs less thinking time. The draw itself is untouched, so the stream
+    // order per player is identical.
+    const reading = intelligence
+      ? THREE.MathUtils.clamp(1.3 - (intelligence.decisionMaking * 0.6 + intelligence.focus * 0.4) / 150, 0.7, 1.2)
+      : 1;
+    // Mentality decides how reliably the level is delivered: a consistent player
+    // re-evaluates on a tighter, steadier schedule.
+    const steadiness = mentality ? THREE.MathUtils.clamp(1.35 - mentality.consistency / 150, 0.75, 1.25) : 1;
+    // Concentration: a player who has been out of the play for a long spell loses a
+    // beat (deterministic — derived from how long since his last involvement, not
+    // from an extra draw). Low concentration lapses further.
+    if (p.hasBall || snap.passFlight?.receiver === p.idx) this.lastInvolvement.set(p.idx, now);
+    const idleFor = Math.max(0, now - (this.lastInvolvement.get(p.idx) ?? now));
+    const lapse = intelligence
+      ? Math.max(0, (1 - intelligence.concentration / 100) * Math.min(1, idleFor / 20)) : 0;
+    this.nextThink.set(p.idx, now + baseDelay * reactionScale * reading * steadiness * (1 + lapse * 0.6) * rng.range(0.72, 1.3));
 
-    const noise = (scale = 1) => rng.range(-1, 1) * CONFIG.ai.decisionNoise * scale;
+    // Decision noise: consistency narrows the spread, decision making keeps the
+    // choice close to the best option under pressure.
+    const noiseScale = (mentality ? 1.4 - mentality.consistency / 150 : 1)
+      * (intelligence ? 1.25 - intelligence.decisionMaking / 300 : 1);
+    const noise = (scale = 1) => rng.range(-1, 1) * CONFIG.ai.decisionNoise * scale * noiseScale;
     const d = (a: THREE.Vector3, b: THREE.Vector3) => a.distanceTo(b);
     const mates = snap.players.filter((q) => q.team === p.team && q.idx !== p.idx);
     const atkSign = this.attackSign(p.team, snap.half);
     const atkGoal = this.goalPos(p.team, snap.half);
     const ownGoal = this.ownGoal(p.team, snap.half);
     const ownU = (v: THREE.Vector3) => v.x * atkSign;
+    // ---- Mentality: effort, and the response to the scoreline --------------
+    // Work rate sets how hard the off-ball jobs are run; determination holds the
+    // effort up when the side is behind; leadership organises the unit around him.
+    const mind = p.attributes?.mentality;
+    const score = snap.score;
+    const trailing = !!score && score[p.team] < score[1 - p.team];
+    const defensiveEffort = mind
+      ? THREE.MathUtils.clamp(0.7 + (mind.defensiveWorkRate * 0.6 + mind.determination * 0.4) / 260
+        + (trailing ? Math.max(0, mind.determination - 60) / 900 : 0), 0.85, 1.25)
+      : 1;
+    const attackingEffort = mind
+      ? THREE.MathUtils.clamp(0.7 + (mind.attackingWorkRate * 0.6 + mind.determination * 0.4) / 260, 0.85, 1.25)
+      : 1;
+    let leadership = 0, leaders = 0;
+    for (const q of snap.players) {
+      if (q.team !== p.team || !q.attributes) continue;
+      leadership += q.attributes.mentality.leadership; leaders++;
+    }
+    // A well-led side holds its shape and presses together (organised around the
+    // best leaders in the unit), independent of any individual's own effort.
+    const organised = leaders ? 0.9 + (leadership / leaders) / 750 : 1;
     const novelty = (key: string) => {
       const entries = this.recentChoices.get(p.idx) ?? [];
       const repeated = entries.filter((k) => k === key).length;
@@ -382,7 +489,11 @@ export class AIController {
         p.callForBall = job.callForBall;
         const running = job.runType === "spin" || job.runType === "drive";
         return this.store(p.idx, {
-          moveTarget: target, desiredSpeed: job.desiredSpeed, action: null,
+          moveTarget: target,
+          // Off-ball intelligence: a smarter mover arrives at his spot at the right
+          // pace instead of jogging into it late; effort governs the top end.
+          desiredSpeed: job.desiredSpeed * attackingEffort
+            * (0.9 + (p.attributes?.intelligence.offBallIntelligence ?? 75) / 750), action: null,
           reason: `${job.job.toUpperCase()}/${job.runType.toUpperCase()}: ${job.mode} | ${plan?.phase} | width ${Math.abs(target.z).toFixed(1)}m | depth ${(target.x * atkSign).toFixed(1)}m | advance ${job.advance.toFixed(1)}m | space ahead ${job.vacancy.toFixed(2)}${job.callForBall ? " | CALL" : ""}${plan?.trigger.active ? " | TRIGGERED" : ""}`,
           supportJob: job.job, supportMode: job.mode, runType: job.runType, runTriggered: plan?.trigger.active,
           utilities: { support: job.score, lane: job.lane, space: job.space, vacancy: job.vacancy,
@@ -411,7 +522,11 @@ export class AIController {
       if (intercept && intercept.idx === p.idx) {
         const predicted = this.projectBall(snap, intercept.time).pos;
         const dist = d(p.pos, predicted);
-        const action = dist < 1.7 && snap.ballVel.length() > 1.6 && this.can(p, "intercept") ? "intercept" : null;
+        // Anticipation: a player who reads the pass arriving can start the
+        // interception a fraction earlier (wider effective reach).
+        const anticipation = p.attributes?.intelligence.anticipation ?? 75;
+        const action = dist < 1.7 * (0.85 + anticipation / 500)
+          && snap.ballVel.length() > 1.6 && this.can(p, "intercept") ? "intercept" : null;
         return this.store(p.idx, {
           moveTarget: predicted, desiredSpeed: CONFIG.ai.maxSprint * (0.9 + p.style.pressing * 0.04),
           action, actionTarget: predicted.clone(), noveltyKey: `intercept:${Math.round(predicted.x / 3)}:${Math.round(predicted.z / 3)}`,
@@ -424,7 +539,9 @@ export class AIController {
       const spaced = this.applySpacing(anchor, p, mates, -1, atkSign);
       if (CONFIG.ai.offside && p.role !== "DEF") this.clampOnside(spaced, snap.ballPos, p.team, snap);
       return this.store(p.idx, {
-        moveTarget: spaced, desiredSpeed: p.role === "DEF" ? 3.6 : 4.2,
+        moveTarget: spaced,
+        desiredSpeed: (p.role === "DEF" ? 3.6 : 4.2) * attackingEffort
+          * (0.9 + (p.attributes?.intelligence.offBallIntelligence ?? 75) / 750),
         action: null, noveltyKey: "loose-shape",
         reason: `${seesBall ? "Recover shape toward projected ball" : "Recover shape toward last seen ball"} · ${this.channelName(anchor.z)}`,
         utilities: { shape: 0.72, trajectory: 0.8 }, urgent: false,
@@ -454,7 +571,9 @@ export class AIController {
     // Team AI: the side's pressing mentality scales how hard the whole unit
     // steps out and hunts the carrier, on top of each player's own style.
     const teamPressing = this.tactics.teamStyle(p.team, snap.matchSeed).pressing;
-    const tackleRisk = p.style.risk * (0.5 + (p.attributes?.physical.aggression ?? 75) / 150);
+    const tackleRisk = p.style.risk * (0.5 + (p.attributes?.physical.aggression ?? 75) / 150)
+      // Discipline: a reckless player dives in; a disciplined one stays on his feet.
+      * (1.25 - (p.attributes?.mentality.discipline ?? 75) / 150);
 
     // Back line steps out to close the central carrier AND the partner covers the shooting lane.
     if (p.role === "DEF" && centerThreat) {
@@ -472,7 +591,7 @@ export class AIController {
       const action = isClosest && distance < 1.55 && this.canTackle(p, snap, "tackle_stand") ? "tackle_stand"
         : isClosest && distance < 2.5 && tackleRisk > 1.12 && this.canTackle(p, snap, "tackle_slide") ? "tackle_slide" : null;
       return this.store(p.idx, {
-        moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing * teamPressing,
+        moveTarget: block, desiredSpeed: CONFIG.ai.maxSprint * p.style.pressing * teamPressing * organised * defensiveEffort,
         action, actionTarget: carrier.pos.clone(), noveltyKey: `step:${Math.round(carrierLocal / 4)}:${isClosest ? 1 : 0}`,
         reason: isClosest
           ? `DEF STEP · close ${shotThreat ? "central shot lane" : "carrier"} · ${distance.toFixed(1)}m`
@@ -496,7 +615,7 @@ export class AIController {
         pressPoint.addScaledVector(toOwn, p.role === "DEF" ? 1.2 : 0.5);
       }
       return this.store(p.idx, {
-        moveTarget: pressPoint, desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing * teamPressing,
+        moveTarget: pressPoint, desiredSpeed: (dist < CONFIG.ai.pressRadius ? CONFIG.ai.maxSprint : CONFIG.ai.maxSprint * 0.82) * p.style.pressing * teamPressing * organised * defensiveEffort,
         action, actionTarget: carrier.pos.clone(), noveltyKey: "press-carrier",
         reason: action ? `${action} · press trigger` : `Press carrier · goal-side · ${dist.toFixed(1)}m`,
         utilities: { press: 1, distance: dist }, urgent: true,
@@ -511,7 +630,8 @@ export class AIController {
         line.lerp(goalSide, blend);
       }
       return this.store(p.idx, {
-        moveTarget: this.applySpacing(line, p, mates, carrier.idx, atkSign), desiredSpeed: shotThreat ? 4.8 : 3.8,
+        moveTarget: this.applySpacing(line, p, mates, carrier.idx, atkSign),
+        desiredSpeed: (shotThreat ? 4.8 : 3.8) * defensiveEffort,
         action: null, noveltyKey: `line:${Math.round(line.z / 2)}`,
         reason: `Back line · ${shotThreat ? "step to close centre" : "hold & track"}`, utilities: { line: 0.86, mark: markedOpponent ? 0.68 : 0.3 }, urgent: false,
       });
@@ -527,11 +647,16 @@ export class AIController {
       // Drop between ball and goal, in a tight central band: the primary job when the
       // ball reaches the defensive third is closing the corridor in front of goal.
       // Goal-side of the ball by ~2 m, never deeper than the six-yard line.
-      const dropU = THREE.MathUtils.clamp(ballOwnU - 2.0, -17.5, ownU(p.pos));
+      // Tactical awareness: a player who reads the danger drops a touch deeper and
+      // screens the corridor earlier instead of holding an attacking position.
+      const awareness = p.attributes?.intelligence.tacticalAwareness ?? 75;
+      const dropU = THREE.MathUtils.clamp(ballOwnU - 2.0 - (awareness - 75) * 0.012, -17.5, ownU(p.pos));
       const z = THREE.MathUtils.clamp(carrier.pos.z * 0.22 + (p.idx % 2 === 0 ? -1.7 : 1.7), -3.6, 3.6);
       const compact = new THREE.Vector3(dropU * atkSign, 0, z);
       return this.store(p.idx, {
-        moveTarget: this.applySpacing(compact, p, mates, carrier.idx, atkSign), desiredSpeed: 5.2,
+        // Teamwork: dropping into the block is a sacrifice a selfish player makes late.
+        moveTarget: this.applySpacing(compact, p, mates, carrier.idx, atkSign),
+        desiredSpeed: 5.2 * defensiveEffort * (0.85 + (mind?.teamwork ?? 75) / 500),
         action: null, noveltyKey: "central-compact",
         reason: `Compact centre · goal-side of ball · ${(ballOwnU + 20).toFixed(0)}m from line`,
         utilities: { compact: 1, goalSide: 0.9 }, urgent: true,
@@ -559,7 +684,8 @@ export class AIController {
       cover.z += p.idx % 2 === 0 ? -2.1 : 2.1;
       cover.z = THREE.MathUtils.clamp(cover.z, -9.5, 9.5);
       return this.store(p.idx, {
-        moveTarget: this.applySpacing(cover, p, mates, carrier.idx, atkSign), desiredSpeed: 4,
+        moveTarget: this.applySpacing(cover, p, mates, carrier.idx, atkSign),
+        desiredSpeed: 4 * defensiveEffort,
         action: null, noveltyKey: "cover-lane", reason: "Cover passing lane · goal-side", utilities: { cover: 0.78 }, urgent: false,
       });
     }
@@ -617,10 +743,13 @@ export class AIController {
     // Team AI: the side's mentality tilts the collective gain-vs-safety
     // tradeoff for every carrier; the individual scores below are unchanged.
     const teamDirectness = plan?.teamStyle.directness ?? 1;
+    // Risk assessment: how much this player values the high-risk / high-reward
+    // option. It scales the turnover ("hazard") weight — up for a player who backs
+    // himself, down for one who protects the ball.
     const weights = {
       gain: baseWeights.gain * teamDirectness,
       safety: baseWeights.safety * (2 - teamDirectness),
-      hazard: baseWeights.hazard,
+      hazard: baseWeights.hazard * (0.75 + (p.attributes?.intelligence.riskAssessment ?? 75) / 300),
     };
     const trigger = plan?.trigger;
     const distance = groundDistance(p.pos, goal);
@@ -689,7 +818,10 @@ export class AIController {
       // This exact kick already failed at its contact frame twice in a row:
       // excluded once, so the re-decision must find another way out.
       const failed = this.failedKicks.get(p.idx);
-      if (failed && failed.key === `${id}:${mate.idx}` && failed.count >= 2) continue;
+      // Resilience: a player who recovers from his own mistakes keeps backing the
+      // same option one failed attempt longer than a fragile one.
+      const retryLimit = (p.attributes?.mentality.resilience ?? 75) > 85 ? 3 : 2;
+      if (failed && failed.key === `${id}:${mate.idx}` && failed.count >= retryLimit) continue;
       const gain = (target.x - p.pos.x) * sign;
       const lane = laneSafety(snap.ballPos, target, field, id === "pass_long" ? 17 : 11);
       // Use both the current marker and predicted position: a marked player is not
@@ -797,7 +929,12 @@ export class AIController {
     // tackle risk and the stamina cost of carrying at pace.
     const carry = dribble.score + forwardSpace * 0.14 + (trigger?.active ? 0.06 : 0)
       + ((p.attributes?.ballControl.dribbling ?? 75) - 75) * 0.003
-      - (pressed ? 0.25 * THREE.MathUtils.clamp(1.5 - (p.attributes?.physical.composure ?? 75) / 150, 0.65, 1.35) : 0)
+      - (pressed ? 0.25 * THREE.MathUtils.clamp(1.5 - (p.attributes?.physical.composure ?? 75) / 150, 0.65, 1.35)
+        // Pressure handling: the same press costs a nervous player more than a
+        // composed one. Big-match temperament takes over as the game runs late.
+        * (1.35 - (p.attributes?.mentality.pressureHandling ?? 75) / 150
+          - (snap.time > CONFIG.match.totalSeconds * 0.4
+            ? ((p.attributes?.mentality.bigMatchTemperament ?? 75) - 75) / 300 : 0)) : 0)
       - (needsReset ? 0.12 : 0) - (1 - p.stamina) * 0.22
       - THREE.MathUtils.clamp((2.5 - pressure) / 2.5, 0, 1) * 0.45;
     const utilities = { shoot, pass: best?.score ?? -1, dribble: carry, shotLane, opening, shotQuality: quality,
@@ -958,7 +1095,11 @@ export class AIController {
         const screened = snap.players.some((q) => q.idx !== p.idx && q.role !== "GK"
           && this.pointNearSegment(q.pos, snap.ballPos, new THREE.Vector3(p.pos.x, 0, shot.z), 0.7));
         const difficulty = (ballSpeed / 20) * (screened ? 1.7 : 1);
-        const err = rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty;
+        // Anticipation decides how well the strike is read before it is struck:
+        // a good reader mis-judges the flight less.
+        const reads = ((p.attributes?.intelligence.anticipation ?? 75) * 0.6
+          + (p.attributes?.intelligence.focus ?? 75) * 0.4) / 100;
+        const err = rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty * (1.6 - reads);
         // Dive timing error: negative = early, positive = late. Skewed late against pace.
         const timing = rng.range(-0.5, 1) * CONFIG.ai.gkTimingError * difficulty;
         this.gkRead.set(p.idx, { age, err, timing });
@@ -1021,6 +1162,30 @@ export class AIController {
           action: this.can(p, "gk_catch") ? "gk_catch" : this.can(p, "gk_parry") ? "gk_parry" : null,
           actionTarget: predicted.clone(), noveltyKey: `cross:${Math.round(predicted.z)}`,
           reason: `GK claim cross · reach ${reach.toFixed(1)}m`, utilities: { cross: 1 }, urgent: true,
+        };
+      }
+    }
+
+    // Hands on a dribbler inside the box. A carrier who has worked the ball into
+    // the keeper's own area is not defended with a foot: the keeper bursts at the
+    // ball and smothers it. This fires even when a defender is goal-side of him —
+    // the six-yard area belongs to the keeper — and it is what puts the gloves on
+    // a low ball at an attacker's feet instead of letting him dribble it in.
+    const dribbler = snap.players.find((q) => q.idx === snap.ballOwner);
+    if (dribbler && dribbler.team !== p.team && dribbler.role !== "GK") {
+      const dribblerDepth = (ball.x - ownGoal.x) * atkSign;
+      const smotherDist = d2(p.pos, ball);
+      if (dribblerDepth > 0 && dribblerDepth < 5.8 && Math.abs(ball.z) < 6.2
+        && ball.y < CONFIG.ai.gkSmotherHeight + 0.4
+        && smotherDist < CONFIG.ai.gkSmotherRush && (dribbler.tackleProtectionT ?? 0) <= 0) {
+        const withHands = smotherDist < CONFIG.ai.gkSmotherRange + 0.6 && this.can(p, "gk_catch");
+        return {
+          moveTarget: ball.clone().setY(0), desiredSpeed: CONFIG.player.gkSprintSpeed,
+          action: withHands ? "gk_catch" : null, actionTarget: ball.clone(), noveltyKey: "gk-smother",
+          reason: withHands
+            ? `GK SMOTHER · hands on the dribbler's ball · ${smotherDist.toFixed(1)}m`
+            : `GK RUSH · dribbler in the box · closing ${smotherDist.toFixed(1)}m`,
+          utilities: { smother: 1, ballDist: smotherDist }, urgent: true,
         };
       }
     }

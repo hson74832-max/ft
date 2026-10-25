@@ -64,6 +64,13 @@ export function startAction(
   if (isTackleAction(action)) beginTackle(e, p, action);
   const seed = actionSeed ?? deterministicActionSeed(e, p, action);
   p.pendingKick = target ? { action, target: target.clone(), passTo, power } : null;
+  // Which boot will strike it. It has to be read here, not at the contact frame: the
+  // wind-up turns the torso onto the departure line, so by contact every kick would
+  // be "in front of the body" and always right-footed.
+  if (target && isKickAction(action)) {
+    const offset = yawDelta(p.facing, yawOf(target.x - p.pos.x, target.z - p.pos.z));
+    p.strikeFoot = offset > 0 ? "L" : "R";
+  }
   e.lastActionSeed = seed;
   e.actionLog.push({ seed, t: e.clock, player: p.idx, action, target: target ? [target.x, target.y, target.z] : undefined });
   if (e.actionLog.length > 80) e.actionLog.shift();

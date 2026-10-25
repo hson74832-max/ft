@@ -51,7 +51,10 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
   let tackleOutcome: TackleOutcome | null = null;
   let tackleDetail = "";
   e.contactTotal++;
-  const foot = footWorld(p, action === "header" ? "head" : action === "throw_in" || action.startsWith("gk_") ? "hands" : "R");
+  // Which boot strikes it: the one the body angle chose when the kick was wound up
+  // (see startAction). The old hard-coded right foot made every contact of a
+  // left-angled strike land on the wrong side of the body.
+  const foot = footWorld(p, action === "header" ? "head" : action === "throw_in" || action.startsWith("gk_") ? "hands" : p.strikeFoot);
   const dist = foot.distanceTo(e.ball.pos);
   const tol = action === "header" ? 0.55 : action.startsWith("gk_") ? 0.8 : 0.42;
   if (dist < tol) e.contactAligned++;
@@ -191,7 +194,9 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         stats.tacklesWon++;
         e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} wins tackle (${action}) · q ${quality.score.toFixed(2)}`, p.team);
         e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} wins tackle (${action})`, p.team);
-        carrier.stumbleT = 0.75;
+        // Resilience: the mental recovery after losing the ball — the body follows.
+        carrier.stumbleT = 0.75 * THREE.MathUtils.clamp(
+          1.35 - carrier.attributes.mentality.resilience / 150, 0.6, 1.2);
         startAction(e, carrier, "stumble");
         if (p.team === e.humanTeam && !e.spectator) setHumanPlayer(e, p);
       } else if (quality.outcome === "spill" && carrier) {

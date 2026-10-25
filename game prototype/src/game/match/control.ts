@@ -6,6 +6,7 @@ import { tieBreakHash } from "../random";
 import { WorldPlayer, WorldSnap } from "../ai";
 import { onsideLimit } from "../tactics";
 import { _v1, _v2 } from "./scratch";
+import { yawDelta, yawOf } from "../angles";
 import { isKickAction, kickFacingError, powerForAction, startAction } from "./actions";
 import { carrierIsProtected } from "./tackles";
 import type { EnginePlayer } from "./types";
@@ -35,8 +36,6 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
       if (gx !== 0 || gy !== 0) { ix = gx; iz = gy; gamepadActive = true; break; }
     }
   }
-  // Touch virtual joystick (updated by the MatchScreen overlay on every touch move).
-  if (e.touchStick.active) { ix = e.touchStick.ix; iz = e.touchStick.iz; gamepadActive = true; }
   const has = ix !== 0 || iz !== 0;
   // Analog magnitude: a light stick tilt walks, a full push runs. Keyboard is
   // digital (magnitude 1). Shift or a near-full stick sprints.
@@ -51,6 +50,35 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
   } else { p.moveTarget.copy(p.pos); p.desiredSpeed = 0; p.decisionReason = "Human hold"; }
   p.utilities = {};
   const hasBall = e.ball.possessedBy === p.idx;
+
+  // ---- Contextual body orientation ---------------------------------------
+  // The shoulders are no longer welded to the stride. Holding [F] with the ball
+  // shields it (body between ball and the nearest opponent) and the player can
+  // still side-step or drop off; without a shield the carrier keeps his chest open
+  // to the goal while his feet work sideways or backwards. Both cost speed in
+  // ./frame, so a square stance is a real choice rather than a free one.
+  p.shielding = hasBall && k.has("f");
+  p.strideFacing = null;
+  if (p.shielding) {
+    const opponent = e.players.reduce<EnginePlayer | null>(
+      (acc, q) => (q.team === p.team || q.role === "GK" ? acc
+        : acc === null || q.pos.distanceToSquared(p.pos) < acc.pos.distanceToSquared(p.pos) ? q : acc), null);
+    _v1.copy(p.pos).sub(opponent ? opponent.pos : p.pos);
+    _v1.y = 0;
+    if (_v1.lengthSq() < 0.04) {
+      const goal = e.ai.goalPos(p.team, e.rules.half);
+      _v1.copy(goal).sub(p.pos);
+    }
+    p.shieldPoint.copy(p.pos).addScaledVector(_v1.normalize(), 2.5);
+    p.decisionReason = "Human shield";
+  } else if (hasBall && has) {
+    const goal = e.ai.goalPos(p.team, e.rules.half);
+    const openFacing = yawOf(goal.x - p.pos.x, goal.z - p.pos.z);
+    const moveFacing = yawOf(ix, iz);
+    // Facing the goal while travelling across the pitch is the side-step; only a
+    // genuine run away from goal hands the body back to the stride.
+    if (Math.abs(yawDelta(openFacing, moveFacing)) < 2.6) p.strideFacing = openFacing;
+  }
 
   // charge pass/shoot
   if (k.has(" ") && !e.chargingPass) { e.chargingPass = true; e.passCharge = 0; }
@@ -68,7 +96,7 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
   }
   if (e.chargingShoot) e.shootCharge = Math.min(1, e.shootCharge + dt * 1.2);
   if (k.has("f")) {
-    k.delete("f");
+    if (!hasBall) k.delete("f"); // off the ball it is a one-shot challenge
     if (!hasBall && !p.anim.busy) {
       if (p.tackleRecoveryT > 0) p.decisionReason = `Tackle recovery ${p.tackleRecoveryT.toFixed(2)}s`;
       else if (carrierIsProtected(e)) p.decisionReason = "Carrier is protected after a tackle";
@@ -83,7 +111,8 @@ export function humanControl(e: MatchHost, p: EnginePlayer, dt: number, snap: Wo
         const id = carrierDist < 1.5 ? "tackle_stand" : "tackle_slide";
         if (startAction(e, p, id, e.ball.pos.clone())) p.decisionReason = `Human ${id}`;
       }
-    } else if (hasBall && !p.anim.busy) {
+    } else if (hasBall && p.anim.actionId !== "shield" && !p.anim.busy) {
+      // The shield clip is a held loop; it is released by `p.shielding` in ./anims.
       if (startAction(e, p, "shield")) p.decisionReason = "Human shield";
     }
   }
@@ -121,7 +150,10 @@ export function bestPassTarget(e: MatchHost, p: EnginePlayer, dir: THREE.Vector3
 
 /** Release a human pass (tap = short, hold = driven long, Q = through ball). */
 export function humanPass(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charge: number, through: boolean) {
-  if (e.ball.possessedBy !== p.idx || p.anim.busy) return;
+  // A lower-priority clip must never swallow the input: the animation controller's
+  // own priority/interrupt window decides whether the kick can start. The old
+  // blanket `p.anim.busy` returned here made a pass silently do nothing.
+  if (e.ball.possessedBy !== p.idx) return;
   let ix = 0, iz = 0;
   const k = e.keys;
   if (k.has("a") || k.has("arrowleft")) ix -= 1;
@@ -152,7 +184,7 @@ export function humanPass(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charge
 
 /** Release a human shot (charge sets power, Q = finesse). */
 export function humanShoot(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charge: number, finesse: boolean) {
-  if (e.ball.possessedBy !== p.idx || p.anim.busy) return;
+  if (e.ball.possessedBy !== p.idx) return;
   const airborne = e.ball.pos.y > 0.35;
   const id = airborne ? "shoot_volley" : finesse ? "shoot_finesse" : "shoot_normal";
   const gx = e.ai.goalPos(p.team, e.rules.half).x;
@@ -175,6 +207,10 @@ export function humanShoot(e: MatchHost, p: EnginePlayer, snap: WorldSnap, charg
 /** Apply one AI decision to the player: branch gates, move target, action start. */
 export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: WorldSnap, live: boolean, frozen: boolean) {
   const tr = e.debugAI ? e.aiTrace.get(p.idx) : undefined;
+  // Contextual body state belongs to the human pad; a player who just left human
+  // control must not keep shielding or side-stepping.
+  p.shielding = false;
+  p.strideFacing = null;
   // Stumble decays for everyone (it previously only decayed on the AI path).
   if (p.stumbleT > 0) p.stumbleT = Math.max(0, p.stumbleT - dt);
   if (frozen) {

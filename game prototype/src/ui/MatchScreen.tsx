@@ -1,47 +1,48 @@
-import { useRef, type TouchEvent } from "react";
-import { Bug, Camera, Eye, Flag, Gauge, Menu as MenuIcon, Pause, Play, RotateCcw, Users, X } from "lucide-react";
+import { Bug, Camera, Eye, RotateCcw, Users, X } from "lucide-react";
 import type { Snapshot } from "../game/engine";
 import type { MatchEngine } from "../game/engine";
 import { Scoreboard } from "./Scoreboard";
-import { RushMark } from "./Badges";
 
 interface Props {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   snap: Snapshot | null;
   paused: boolean;
   debugOpen: boolean;
+  showFps: boolean;
   onDebug: () => void;
   onPause: (paused: boolean) => void;
   onRestart: () => void;
   onMenu: () => void;
   onSwitch: () => void;
+  onShowFps: (show: boolean) => void;
   /** Null until the App effect has constructed the engine (first paint). */
   engine: () => MatchEngine | null;
 }
 
-export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPause, onRestart, onMenu, onSwitch, engine }: Props) {
+export function MatchScreen({ canvasRef, snap, paused, debugOpen, showFps, onDebug, onPause, onRestart, onMenu, onSwitch, onShowFps, engine }: Props) {
   const spectator = !!snap?.spectator;
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#05090c] text-white">
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
-      <TouchJoystick engine={engine} />
 
-      {/* top scrim */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[110px] bg-gradient-to-b from-black/75 to-transparent" />
-
-      <div className="absolute left-4 top-3 z-20 flex items-center gap-2">
-        <RushMark size={20} />
-        <button onClick={onMenu} className="flex items-center gap-1.5 rounded-md border border-white/10 bg-black/55 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 backdrop-blur hover:border-white/25 hover:text-white">
-          <MenuIcon className="h-3 w-3" /> Menu
-        </button>
-        <button onClick={() => onPause(!paused)} className="flex items-center gap-1.5 rounded-md border border-white/10 bg-black/55 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 backdrop-blur hover:border-white/25 hover:text-white">
-          {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />} {paused ? "Resume" : "Pause"}
-        </button>
-      </div>
+      {/* FPS — optional, top left, never part of the play area */}
+      {showFps && (
+        <div className="pointer-events-none absolute left-4 top-3 z-20 rounded border border-white/10 bg-black/55 px-2 py-1 font-mono text-[10px] font-bold text-[#c8f31d] backdrop-blur">
+          {snap?.fps ?? 60} FPS
+        </div>
+      )}
 
       <div className="absolute left-1/2 top-3 z-20 origin-top -translate-x-1/2 scale-[0.78] sm:scale-100">
         {snap ? <Scoreboard snap={snap} /> : <div className="h-[54px] w-[454px] animate-pulse rounded-[10px] bg-white/10" />}
       </div>
+
+      {/* Shot / pass power. Lives under the scoreboard so the play area stays clear. */}
+      {snap && (snap.passCharge > 0 || snap.shootCharge > 0) && (
+        <div className="pointer-events-none absolute left-1/2 top-[86px] z-20 flex -translate-x-1/2 gap-2 rounded-md border border-white/10 bg-black/70 p-2 backdrop-blur">
+          {snap.passCharge > 0 && <Meter label="PASS" value={snap.passCharge} color="bg-sky-400" />}
+          {snap.shootCharge > 0 && <Meter label="SHOOT" value={snap.shootCharge} color="bg-[#c8f31d]" />}
+        </div>
+      )}
 
       <div className="absolute right-4 top-3 z-20 flex items-center gap-1.5">
         <QuickBtn icon={<Camera className="h-3.5 w-3.5" />} label={snap?.cameraMode ?? "broadcast"} onClick={() => { const e = engine(); if (e) e.cameraMode = e.cameraMode === "broadcast" ? "follow" : e.cameraMode === "follow" ? "free" : "broadcast"; }} />
@@ -49,13 +50,6 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
         <QuickBtn icon={<Users className="h-3.5 w-3.5" />} label="switch" onClick={onSwitch} />
         <QuickBtn icon={<RotateCcw className="h-3.5 w-3.5" />} label="reset" onClick={() => engine()?.resetPositions("kickoff")} />
         <QuickBtn icon={<Bug className="h-3.5 w-3.5" />} label="data" active={debugOpen} onClick={onDebug} />
-      </div>
-
-      {/* possession / phase strip */}
-      <div className="absolute left-4 top-[58px] z-10 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider">
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1 text-zinc-300">Ball <b className={snap?.possession === "RED" ? "text-red-400" : snap?.possession === "BLUE" ? "text-sky-400" : "text-zinc-400"}>{snap?.possession ?? "—"}</b></span>
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1 text-zinc-300">{snap?.phase ?? "KICKOFF"}</span>
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1 text-zinc-500">SEED {snap?.matchSeed ?? "—"}</span>
       </div>
 
       {/* centre banners */}
@@ -70,7 +64,7 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
         <div className="pointer-events-none absolute inset-x-0 top-[118px] z-20 flex justify-center">
           <div className="rounded-md border border-[#c8f31d]/35 bg-black/80 px-4 py-2 text-center backdrop-blur">
             <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[#c8f31d]">Restart · {(snap.restartKind ?? "kickoff").replace("_", " ")}</div>
-            <div className="text-[11px] text-zinc-300">{snap.restartKind === "goal_kick" ? "Keeper to take from the goal area" : snap.restartKind === "throw_in" ? "Throw-in at the exit point" : snap.restartKind === "corner" ? "Corner flag delivery" : "Players setting up"}</div>
+            <div className="text-[11px] text-zinc-300">{snap.restartKind === "goal_kick" ? "Keeper to take from the goal area" : snap.restartKind === "throw_in" ? "Throw-in at the exit point" : snap.restartKind === "corner" ? "Corner flag delivery" : snap.restartKind === "free_kick" ? "Wall set — free kick" : snap.restartKind === "penalty" ? "Penalty" : "Players setting up"}</div>
           </div>
         </div>
       )}
@@ -91,46 +85,23 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
         </div>
       )}
 
-      {/* control hints */}
-      <div className="absolute bottom-3 left-4 z-10 hidden max-w-[430px] items-center gap-3 rounded-md border border-white/10 bg-black/55 px-3 py-2 text-[10px] text-zinc-300 backdrop-blur md:flex">
-        <span className="font-bold text-white">#{snap?.humanIdx ?? 4} RED {snap?.humanRole ?? "FWD"}</span>
-        <Key k="WASD" d="move" /><Key k="SHIFT" d="sprint" /><Key k="SPACE" d="pass" /><Key k="E" d="shoot" /><Key k="Q" d="through" /><Key k="F" d="tackle" /><Key k="X" d="switch" /><Key k="H" d="anim panel" />
-      </div>
-
-      {/* charge + player chip */}
-      <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
-        {snap && (snap.passCharge > 0 || snap.shootCharge > 0) ? (
-          <div className="flex gap-2 rounded-md border border-white/10 bg-black/70 p-2 backdrop-blur">
-            {snap.passCharge > 0 && <Meter label="PASS" value={snap.passCharge} color="bg-sky-400" />}
-            {snap.shootCharge > 0 && <Meter label="SHOOT" value={snap.shootCharge} color="bg-[#c8f31d]" />}
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400 backdrop-blur">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#c8f31d]" /> {snap?.spectator ? "Spectating" : "You control"} · HBC {snap?.humanRole ?? "FWD"}
-            <span className="text-zinc-600">FPS {snap?.fps ?? 60}</span>
-          </div>
-        )}
-      </div>
-
-      {/* FPS / telemetry bottom right */}
-      <div className="absolute bottom-3 right-4 z-10 flex items-center gap-2 text-[9px] font-bold uppercase tracking-wider text-zinc-500">
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1"><Gauge className="mr-1 inline h-3 w-3" />{snap?.fps ?? 60} FPS</span>
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1">{snap?.contactPct ?? 100}% contact · {snap?.contactTotal ?? 0}</span>
-        <span className="rounded border border-white/10 bg-black/55 px-2 py-1"><Flag className="mr-1 inline h-3 w-3" />offside {snap?.offsideOn ? "on" : "off"}</span>
-      </div>
-
       {debugOpen && snap && <DebugDrawer snap={snap} engine={engine} onClose={onDebug} />}
 
+      {/* Start / Esc pauses the match and opens the menu. */}
       {paused && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="w-[380px] rounded-xl border border-white/10 bg-[#0c1216] p-5 shadow-2xl">
             <div className="font-display text-[13px] font-bold uppercase tracking-[0.3em] text-[#c8f31d]">Paused</div>
             <div className="mt-1 font-display text-3xl font-extrabold">HBC {snap?.score[0] ?? 0} – {snap?.score[1] ?? 0} RWR</div>
-            <div className="text-[11px] text-zinc-400">{snap?.elapsedClock} · {snap?.halfLabel} · seed {snap?.matchSeed}</div>
+            <div className="text-[11px] text-zinc-400">{pausedHint(snap)}</div>
             <div className="mt-4 space-y-2">
               <button onClick={() => onPause(false)} className="w-full rounded bg-[#c8f31d] py-2 font-display text-sm font-extrabold uppercase tracking-wide text-black">Resume match</button>
               <button onClick={onRestart} className="w-full rounded border border-white/10 bg-white/5 py-2 font-display text-sm font-bold uppercase tracking-wide text-white hover:bg-white/10">Restart match</button>
               <button onClick={onMenu} className="w-full rounded border border-white/10 bg-white/5 py-2 font-display text-sm font-bold uppercase tracking-wide text-zinc-300 hover:bg-white/10">Return to menu</button>
+              <button onClick={() => onShowFps(!showFps)} className="flex w-full items-center justify-between rounded border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-zinc-300 hover:bg-white/10">
+                <span>FPS counter</span>
+                <span className={`flex h-4 w-8 items-center rounded-full p-0.5 ${showFps ? "bg-[#c8f31d]" : "bg-zinc-600"}`}><span className={`h-3 w-3 rounded-full bg-white transition-all ${showFps ? "ml-auto" : ""}`} /></span>
+              </button>
             </div>
           </div>
         </div>
@@ -143,7 +114,7 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
             <div className="my-2 flex items-center justify-center gap-4 font-display text-5xl font-extrabold">
               <span>HBC</span><span className="rounded bg-white px-3 py-1 text-4xl text-black">{snap.score[0]} – {snap.score[1]}</span><span>RWR</span>
             </div>
-            <div className="text-[11px] text-zinc-400">Seed {snap.matchSeed} · 10 players · no soft-locks</div>
+            <div className="text-[11px] text-zinc-400">{snap.halfLabel} · 10 players · no soft-locks</div>
             <div className="mt-5 flex gap-2">
               <button onClick={onRestart} className="flex-1 rounded bg-[#c8f31d] py-2.5 font-display text-sm font-extrabold uppercase tracking-wide text-black">Rematch</button>
               <button onClick={onMenu} className="flex-1 rounded border border-white/15 bg-white/5 py-2.5 font-display text-sm font-bold uppercase tracking-wide">Menu</button>
@@ -155,16 +126,17 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, onDebug, onPau
   );
 }
 
+function pausedHint(snap: Snapshot | null) {
+  if (!snap) return "Escape or Start resumes";
+  return `${snap.elapsedClock} · ${snap.halfLabel} · Esc / Start resumes`;
+}
+
 function QuickBtn({ icon, label, onClick, active }: { icon: React.ReactNode; label: string; onClick: () => void; active?: boolean }) {
   return (
     <button onClick={onClick} title={label} className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide backdrop-blur ${active ? "border-[#c8f31d] bg-[#c8f31d] text-black" : "border-white/10 bg-black/55 text-zinc-300 hover:border-white/25 hover:text-white"}`}>
       {icon}<span className="hidden lg:inline">{label}</span>
     </button>
   );
-}
-
-function Key({ k, d }: { k: string; d: string }) {
-  return <span className="whitespace-nowrap"><b className="rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-white">{k}</b> <span className="text-zinc-400">{d}</span></span>;
 }
 
 function Meter({ label, value, color }: { label: string; value: number; color: string }) {
@@ -271,44 +243,4 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 function Row({ k, v }: { k: string; v: string }) {
   return <div className="flex justify-between gap-2"><span className="text-zinc-500">{k}</span><span className="break-all text-right text-zinc-300">{v}</span></div>;
-}
-
-/** Touch virtual joystick for analogue movement on touch devices. Writes straight
- * into `engine.touchStick`, which `humanControl` reads each frame alongside the
- * gamepad and keyboard. */
-function TouchJoystick({ engine }: { engine: () => MatchEngine | null }) {
-  const baseRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef<HTMLDivElement>(null);
-  const anchor = useRef({ x: 0, y: 0 });
-  const maxDist = 44;
-  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
-  const start = (ev: TouchEvent) => {
-    const t = ev.touches[0];
-    anchor.current = { x: t.clientX, y: t.clientY };
-    const eng = engine();
-    if (eng) eng.touchStick = { ix: 0, iz: 0, active: true };
-  };
-  const move = (ev: TouchEvent) => {
-    ev.preventDefault();
-    const t = ev.touches[0];
-    const nx = clamp((t.clientX - anchor.current.x) / maxDist);
-    const ny = clamp((t.clientY - anchor.current.y) / maxDist);
-    const eng = engine();
-    if (eng) eng.touchStick = { ix: nx, iz: ny, active: true };
-    stickRef.current!.style.transform = `translate(${nx * 18}px, ${ny * 18}px)`;
-  };
-  const end = () => {
-    anchor.current = { x: 0, y: 0 };
-    const eng = engine();
-    if (eng) eng.touchStick = { ix: 0, iz: 0, active: false };
-    stickRef.current!.style.transform = `translate(0, 0)`;
-  };
-  return (
-    <div className="absolute bottom-8 left-6 z-20" style={{ touchAction: "none" }}>
-        <div ref={baseRef} className="relative w-16 h-16 rounded-full border border-white/20 bg-black/60 backdrop-blur-sm" onTouchStart={(e) => start(e)} onTouchMove={(e) => { e.preventDefault(); move(e); }} onTouchEnd={end} onTouchCancel={end}>
-        <div ref={stickRef} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#22d3ee] shadow-[0_0_12px_rgba(34,211,238,0.6)]" />
-      </div>
-      <div className="text-[9px] text-zinc-500 text-center mt-1">move</div>
-    </div>
-  );
 }

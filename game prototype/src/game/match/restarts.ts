@@ -37,6 +37,7 @@ export function resetPositions(e: MatchHost, kind: string) {
     p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
     p.holdT = 0; p.stumbleT = 0;
     p.faceTarget = null; p.faceTargetT = 0;
+    p.shielding = false; p.strideFacing = null;
     clearPerception(p);
     resetTackleState(p);
     p.decisionReason = "reset"; p.utilities = {};
@@ -153,6 +154,7 @@ export function placeForRestart(e: MatchHost) {
       p.pendingKick = null; p.restartTaker = false; p.callForBall = false;
       p.holdT = 0; p.stumbleT = 0;
       p.faceTarget = null; p.faceTargetT = 0;
+      p.shielding = false; p.strideFacing = null;
       clearPerception(p);
       resetTackleState(p);
       p.decisionReason = "restart setup"; p.utilities = {};
@@ -301,6 +303,128 @@ export function placeForRestart(e: MatchHost) {
           _v1.copy(e.ball.pos).sub(p.pos);
           if (_v1.length() > 0.3) p.facing = yawOfVector(_v1);
         });
+      }
+      // ---- Free kicks and penalties ---------------------------------------
+      // A foul stops play with the attacking side already advanced. Without its own
+      // staging the defending team kept the shape it was attacking in when the foul
+      // was committed: forwards high and wide, nobody between the ball and goal, and
+      // an open path for the taker. Both sides are laid out here instead — wall on
+      // the ball→near-post line, the rest of the block goal-side of the ball.
+      if (pr.kind === "free_kick" || pr.kind === "penalty") {
+        const isPenalty = pr.kind === "penalty";
+        const defendTeam = 1 - pr.team;
+        const ownGoal = e.ai.ownGoal(defendTeam, e.rules.half);
+        const atkOwnGoal = e.ai.ownGoal(pr.team, e.rules.half);
+        const ball = e.ball.pos;
+        const toOwn = ownGoal.clone().sub(ball).setY(0);
+        if (toOwn.lengthSq() < 0.01) toOwn.set(-sign, 0, 0);
+        toOwn.normalize();
+        const across = new THREE.Vector3(-toOwn.z, 0, toOwn.x);
+        const goalHalf = CONFIG.pitch.goalWidth / 2;
+        const rangeToGoal = ball.distanceTo(ownGoal);
+        const halfL = CONFIG.pitch.length / 2, halfW = CONFIG.pitch.width / 2;
+        const face = (p: EnginePlayer, at: THREE.Vector3) => {
+          _v1.copy(at).sub(p.pos);
+          if (_v1.length() > 0.3) p.facing = yawOfVector(_v1);
+        };
+        const stage = (p: EnginePlayer, spot: THREE.Vector3, lookAt?: THREE.Vector3) => {
+          p.pos.set(
+            THREE.MathUtils.clamp(spot.x, -halfL + 0.8, halfL - 0.8), 0,
+            THREE.MathUtils.clamp(spot.z, -halfW + 0.6, halfW - 0.6),
+          );
+          p.vel.set(0, 0, 0); p.moveTarget.copy(p.pos);
+          if (lookAt) face(p, lookAt);
+        };
+        const roleRank = (p: EnginePlayer) => (p.role === "DEF" ? 0 : p.role === "MID" ? 1 : 2);
+        const attackers = e.players.filter((p) => p.team === pr.team && p.idx !== taker.idx && p.role !== "GK")
+          .sort((a, b) => (a.role === "FWD" ? 0 : a.role === "MID" ? 1 : 2) - (b.role === "FWD" ? 0 : b.role === "MID" ? 1 : 2));
+        const defenders = e.players.filter((p) => p.team === defendTeam && p.role !== "GK")
+          .sort((a, b) => roleRank(a) - roleRank(b)
+            || a.pos.distanceTo(ball) - b.pos.distanceTo(ball)
+            || tieBreakHash(e.matchSeed, a.idx, a.runSerial, `fk-block:${pr.id}`)
+              - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `fk-block:${pr.id}`));
+        const attackingGk = e.players.find((p) => p.team === pr.team && p.role === "GK");
+        const defendingGk = e.players.find((p) => p.team === defendTeam && p.role === "GK");
+        if (isPenalty) {
+          // Everyone but the taker waits outside the box and behind the ball.
+          attackers.forEach((p, i) => {
+            const lateral = ((i % 3) - 1) * 4.2;
+            stage(p, new THREE.Vector3(ball.x - sign * (5.2 + Math.floor(i / 3) * 1.6), 0, lateral), ball);
+          });
+          defenders.forEach((p, i) => {
+            const boxEdge = ownGoal.x + sign * 6.3;
+            const lateral = ((i % 4) - 1.5) * 3.4;
+            stage(p, new THREE.Vector3(boxEdge, 0, lateral), ball);
+          });
+        } else {
+          // Attacking shape. Runners only attack the box when the ball can actually
+          // be delivered there; otherwise the side keeps a compact shape around the
+          // ball — everyone stays ball-side of the defensive line, so nobody is in
+          // an offside position when the kick is taken.
+          const boxSpot = new THREE.Vector3(ownGoal.x - sign * 4.0, 0, 0);
+          const nearSide = Math.sign(ball.z) || 1;
+          const deliveryRange = rangeToGoal <= 24;
+          const runners: EnginePlayer[] = [];
+          let supportDepth = 0;
+          attackers.forEach((p, i) => {
+            if (i === 0) {
+              stage(p, ball.clone().addScaledVector(across, 4.2).addScaledVector(toOwn, -1.2), ownGoal);
+              return;
+            }
+            if (deliveryRange && i <= 2) {
+              const lateral = i === 1 ? nearSide * 1.8 : -nearSide * 2.6;
+              stage(p, new THREE.Vector3(boxSpot.x, 0, lateral), ownGoal);
+              runners.push(p);
+              return;
+            }
+            const depth = 0.8 + 1.2 * (i - 1);
+            supportDepth = Math.max(supportDepth, depth);
+            stage(p, ball.clone().addScaledVector(toOwn, depth)
+              .addScaledVector(across, (i % 2 === 0 ? 1 : -1) * 5.2), ownGoal);
+          });
+          const inWallRange = rangeToGoal <= CONFIG.tactics.fkWallCloseRange;
+          // The wall takes only the men who are not needed to pick up a runner: an
+          // unmarked runner is a receiver the taker could not legally use.
+          const wallSize = inWallRange
+            ? Math.max(0, Math.min(rangeToGoal < 12 ? 3 : 2, defenders.length - runners.length)) : 0;
+          const nearPost = new THREE.Vector3(ownGoal.x, 0, nearSide * goalHalf);
+          const wallLine = nearPost.clone().sub(ball).setY(0);
+          if (wallLine.lengthSq() < 0.01) wallLine.copy(toOwn);
+          wallLine.normalize();
+          const wallSide = new THREE.Vector3(-wallLine.z, 0, wallLine.x);
+          for (let i = 0; i < wallSize; i++) {
+            stage(defenders[i], ball.clone()
+              .addScaledVector(wallLine, CONFIG.tactics.fkWallDistance)
+              .addScaledVector(wallSide, (i - (wallSize - 1) / 2) * 0.85), ball);
+          }
+          // Pick up the deep runners first, then the options beside the ball: every
+          // one of them needs a defender between him and the goal, otherwise the kick
+          // is just rolled into an unmarked receiver.
+          const options = [...attackers].sort((a, b) => a.pos.distanceTo(ball) - b.pos.distanceTo(ball));
+          const marked = [...runners];
+          for (const option of options) {
+            if (marked.length >= defenders.length - wallSize - 1) break;
+            if (!marked.includes(option)) marked.push(option);
+          }
+          const markerPool = defenders.slice(wallSize);
+          const lineDefenders = markerPool.slice(marked.length);
+          marked.forEach((target, i) => {
+            const marker = markerPool[i];
+            if (marker) stage(marker, target.pos.clone().addScaledVector(toOwn, CONFIG.tactics.fkBoxGuard * 0.65), ball);
+          });
+          // Everyone left holds a compact line goal-side of the ball, screened across
+          // the route to goal, level with the deepest supporting attacker.
+          const lineDepth = Math.max(CONFIG.tactics.fkBlockDrop, supportDepth + 1.8);
+          lineDefenders.forEach((p, i) => {
+            const lateral = (i % 2 === 0 ? 1 : -1) * (2.0 + Math.floor(i / 2) * 2.6);
+            stage(p, ball.clone().addScaledVector(toOwn, lineDepth).addScaledVector(across, lateral), ball);
+          });
+        }
+        if (attackingGk) stage(attackingGk, new THREE.Vector3(atkOwnGoal.x + sign * 2.5, 0, 0), ball);
+        if (defendingGk) {
+          const gkSpot = keeperPositionTarget(ball, ownGoal, e.ai.attackSign(defendingGk.team, e.rules.half));
+          stage(defendingGk, gkSpot.target, ball);
+        }
       }
     }
     // Opponents respect the restart distance without collapsing into the taker's lane.

@@ -44,6 +44,7 @@ export function buildPlayers(e: MatchHost) {
         decisionReason: "init", utilities: {}, restartTaker: false,
         runSerial: 0, style: e.ai.sampleStyle(f.role, idx), attributes: e.ai.sampleAttributes(f.role, idx),
         perception: createPerception(e.matchSeed, idx), faceTarget: null, faceTargetT: 0,
+        shielding: false, strikeFoot: "R", shieldPoint: new THREE.Vector3(f.home[0], 0, f.home[1]), strideFacing: null,
       });
     });
     startIdx += FORMATIONS[key].length;
@@ -75,7 +76,10 @@ export function setHumanPlayer(e: MatchHost, p: EnginePlayer) {
 export function switchToNearest(e: MatchHost, manual = false) {
   if (e.spectator) return;
   const mates = e.players.filter((p) => p.team === e.humanTeam && p.role !== "GK");
-  const best = [...mates].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos))[0];
+  const ranked = [...mates].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos));
+  // A manual switch must always do something: when the nearest man is already
+  // selected, [X] cycles to the next one out instead of silently no-opping.
+  const best = manual ? ranked.find((p) => p.idx !== e.humanIdx) ?? ranked[0] : ranked[0];
   if (best && best.idx !== e.humanIdx) {
     const current = e.players[e.humanIdx];
     if (current) current.isHuman = false;

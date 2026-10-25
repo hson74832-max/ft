@@ -41,6 +41,14 @@ export interface EnginePlayer {
   /** Body orientation the player must reach before the queued kick can be struck. */
   faceTarget: THREE.Vector3 | null;
   faceTargetT: number;
+  /** Holding the ball up with the body between it and the nearest opponent. */
+  shielding: boolean;
+  /** Boot the current kick is struck with, chosen from the body angle at the wind-up. */
+  strikeFoot: "L" | "R";
+  /** Point the shoulders are turned onto while shielding (away from the pressure). */
+  shieldPoint: THREE.Vector3;
+  /** Body angle held while side-stepping / backpedalling with the ball, or null. */
+  strideFacing: number | null;
   supportJob?: SupportJob;
   supportRun?: RunType;
   supportMode?: string;
