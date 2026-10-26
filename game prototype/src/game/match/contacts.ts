@@ -31,6 +31,27 @@ function releaseToKick(e: MatchHost, p: EnginePlayer) {
 }
 
 /**
+ * Pull a release point inside the field of play.
+ *
+ * A throw-in taker stands lawfully *outside* the touchline (z = ±(W/2 + 0.3)), so
+ * releasing the ball at his own position handed `outGoalCheck` a ball 0.3 m beyond
+ * the line on the very frame the throw was taken: `|z| > W/2 + r` is already true at
+ * rest. Every throw-in was therefore awarded straight back to the opponent from the
+ * same spot, and the two sides ping-ponged throw-ins until the final whistle without
+ * the ball ever entering the pitch. The ball leaves the hands above the line, but its
+ * flight starts inside it.
+ */
+export function clampReleaseInsidePitch(pos: THREE.Vector3, margin = 0.03): THREE.Vector3 {
+  const hx = Math.max(0.2, CONFIG.pitch.length / 2 - CONFIG.ball.radius - margin);
+  const hz = Math.max(0.2, CONFIG.pitch.width / 2 - CONFIG.ball.radius - margin);
+  return pos.set(
+    THREE.MathUtils.clamp(pos.x, -hx, hx),
+    pos.y,
+    THREE.MathUtils.clamp(pos.z, -hz, hz),
+  );
+}
+
+/**
  * Resolve the named profile that strikes this ball, using a per-kick deterministic
  * stream so sampling physics never shifts the AI's random draws.
  */
@@ -201,8 +222,15 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const choiceRng = new SeededRandom(profileStream(e.matchSeed, p.idx, p.runSerial, `shot-choice:${action}`));
       // A free kick is struck as a free kick: curled around the wall when the lane is
       // blocked, a knuckleball when the range is long and the wall is set.
-      const isFreeKick = activeRestart?.kind === "free_kick" && shotDistance > 16;
-      const shotChoice = chooseProfile(
+      const isFreeKick = activeRestart?.kind === "free_kick";
+      // A penalty is a driven strike at a corner of the goal, never a placed/chipped
+      // ball: the generic shot chooser picked `shot_chip` on ~35 % of penalties
+      // (distance < 11 m), and a chip launched at 25–40° from 4.2 m clears the 2 m
+      // crossbar — so a third of all penalties were skied from the spot.
+      const isPenalty = activeRestart?.kind === "penalty";
+      const shotChoice = isPenalty
+        ? ACTION_PROFILES.shot_low_driven
+        : chooseProfile(
         isFreeKick
           ? { family: "free_kick" }
           : { family: "shot", action: action === "shoot_volley" ? "shoot_volley" : action === "shoot_finesse" ? "shoot_finesse" : "shoot_normal" },
@@ -536,19 +564,29 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       // Only the restart taker may release the ball — prevents a stray
       // throw_in animation from ejecting a ball another player owns.
       if (!ownerIsMe && !p.restartTaker) break;
+      // The ball leaves the hands from just inside the touchline: the taker stands
+      // outside it, and releasing there put the ball out of play on the throw frame
+      // (see `clampReleaseInsidePitch`). Plan from that release point — a cancelled
+      // throw must leave the ball untouched in the taker's hands for the retry.
+      const releasePos = clampReleaseInsidePitch(new THREE.Vector3(p.pos.x, 1.65, p.pos.z));
+      const heldPos = e.ball.pos.clone();
+      e.ball.pos.copy(releasePos);
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
-      if (!plan) { p.decisionReason = "THROW CANCELLED · no valid named teammate"; break; }
-      e.ball.release();
-      e.ball.pos.set(p.pos.x, 1.65, p.pos.z);
-      e.ball.lastTouch = p.idx; e.ball.lastTouchTeam = p.team;
-      const throwAim = plan.target.clone().sub(e.ball.pos).setY(0).normalize();
-      const throwDot = passAimDot(e.ball.pos, throwAim.clone().multiplyScalar(plan.power), plan.target);
+      if (!plan) {
+        e.ball.pos.copy(heldPos);
+        p.decisionReason = "THROW CANCELLED · no valid named teammate";
+        break;
+      }
+      const throwAim = plan.target.clone().sub(releasePos).setY(0).normalize();
+      const throwDot = passAimDot(releasePos, throwAim.clone().multiplyScalar(plan.power), plan.target);
       if (!passAimIsValid(throwDot, CONFIG.ai.passAimConeDegrees)) {
-        e.ball.pos.set(p.pos.x, CONFIG.ball.radius, p.pos.z);
-        e.ball.vel.set(0, 0, 0);
+        e.ball.pos.copy(heldPos);
         p.decisionReason = "THROW CANCELLED · aim outside receiver cone";
         break;
       }
+      e.ball.release();
+      e.ball.pos.copy(releasePos);
+      e.ball.lastTouch = p.idx; e.ball.lastTouchTeam = p.team;
       const throwStrike = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES.throw_in, `throw:${activeRestart?.id ?? 0}`, {
         distance: plan.distance, accuracy: p.attributes.passing.shortGroundPassing,
       });

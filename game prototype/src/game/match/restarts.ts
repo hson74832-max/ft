@@ -202,6 +202,17 @@ export function placeForRestart(e: MatchHost) {
       } else if (pr.kind === "goal_kick") {
         const side = Math.sign(pr.pos[0]);
         taker.pos.set(side * (CONFIG.pitch.length / 2 - 2.0), 0, pr.pos[1]);
+      } else if (pr.kind === "free_kick" || pr.kind === "penalty") {
+        // The taker stands BEHIND the ball. He used to be staged exactly on the
+        // restart spot: his boots were inside the ball for the whole setup, and on
+        // the first live frame the possessed ball is glued the control offset
+        // (0.48 m) in front of him, so it popped forward off the spot. A real
+        // approach step also makes the wind-up read as a run-up.
+        const spot = new THREE.Vector3(pr.pos[0], 0, pr.pos[1]);
+        const toGoal = e.ai.goalPos(pr.team, e.rules.half).clone().sub(spot).setY(0);
+        if (toGoal.lengthSq() < 1e-4) toGoal.set(sign, 0, 0);
+        toGoal.normalize();
+        taker.pos.set(spot.x - toGoal.x * 0.9, 0, spot.z - toGoal.z * 0.9);
       } else taker.pos.set(pr.pos[0], 0, pr.pos[1]);
       taker.moveTarget.copy(taker.pos); taker.desiredSpeed = 0;
       taker.restartTaker = true;
@@ -220,11 +231,17 @@ export function placeForRestart(e: MatchHost) {
         // Facing into the box: shoulders square to the penalty spot.
         taker.facing = Math.atan2(-(0 - taker.pos.z), (goalX - sign * 4.2) - taker.pos.x);
         // Lofted long delivery into the danger area: near post, penalty spot, far post, edge.
+        // Every spot is 4 m or more off the goal line on purpose. The two shallow
+        // spots (2.2 m / 2.6 m) sat exactly where the defending keeper stands on his
+        // near post, so the delivery dropped on the keeper's toes: 7 of 12 sampled
+        // corners were claimed by the keeper without him moving. On this 40 m pitch
+        // the six-yard area is only ~2 m deep, so the realistic attack zone starts
+        // around the penalty spot and runs back to the edge of the box.
         const runnerSpots: [number, number][] = [
-          [goalX - sign * 2.6, cornerSide * 1.4],    // near post
-          [goalX - sign * 4.2, 0],                    // penalty spot
-          [goalX - sign * 2.2, -cornerSide * 2.8],   // far post
-          [goalX - sign * 6.4, -cornerSide * 1.6],   // edge of box
+          [goalX - sign * 4.4, 0],                   // penalty spot / near post area
+          [goalX - sign * 4.4, cornerSide * 2.4],    // front post, a step off the line
+          [goalX - sign * 5.8, -cornerSide * 3.4],   // back post
+          [goalX - sign * 7.6, cornerSide * 2.0],    // edge of box
         ];
         const runners = e.players.filter((p) => p.team === pr.team && p.idx !== taker.idx && p.role !== "GK")
           .sort((a, b) => (b.role === "FWD" ? 1 : 0) - (a.role === "FWD" ? 1 : 0));
@@ -382,10 +399,19 @@ export function placeForRestart(e: MatchHost) {
             const lateral = ((i % 3) - 1) * 4.2;
             stage(p, new THREE.Vector3(ball.x - sign * (5.2 + Math.floor(i / 3) * 1.6), 0, lateral), ball);
           });
+          // Law 14: every player other than the taker and the keeper must be outside
+          // the penalty area, at least 9.15 m from the ball (≈3.5 m at this scale) and
+          // behind the ball. `ownGoal.x + sign * 6.3` was the *goal line* plus the box
+          // depth in the WRONG direction — i.e. on the goal line, inside the six-yard
+          // box — and `stage()` then clamped it to 19.2: four defenders stood across
+          // the goal mouth, 0.8 m from the line, and physically blocked penalties.
+          // `penaltyEdgeDrop` (documented, never read) is the block's distance beyond
+          // the area edge.
+          const blockX = ownGoal.x - sign * (CONFIG.pitch.penaltyAreaDepth + CONFIG.tactics.penaltyEdgeDrop);
+          const behindBall = (blockX - ball.x) * sign < -0.5 ? blockX : ball.x - sign * 2.6;
           defenders.forEach((p, i) => {
-            const boxEdge = ownGoal.x + sign * 6.3;
             const lateral = ((i % 4) - 1.5) * 3.4;
-            stage(p, new THREE.Vector3(boxEdge, 0, lateral), ball);
+            stage(p, new THREE.Vector3(behindBall, 0, lateral), ball);
           });
         } else {
           // Attacking shape. Runners only attack the box when the ball can actually
@@ -413,7 +439,15 @@ export function placeForRestart(e: MatchHost) {
             stage(p, ball.clone().addScaledVector(toOwn, depth)
               .addScaledVector(across, (i % 2 === 0 ? 1 : -1) * 5.2), ownGoal);
           });
-          const inWallRange = rangeToGoal <= CONFIG.tactics.fkWallCloseRange;
+          // "No wall when the kick is too wide": `fkWallMinHeight` documented this
+          // rule but was never read, so a free kick out by the corner flag — almost
+          // level with the goal line — still got a three-man wall posted across the
+          // goal mouth. The angle is measured above the goal line (0 = level with
+          // it, π/2 = straight in front of goal), and a wall is only posted when
+          // the kick has a real shooting angle.
+          const goalLineAngle = Math.atan2(Math.max(0.1, (ownGoal.x - ball.x) * sign), Math.abs(ball.z) + 0.1);
+          const inWallRange = rangeToGoal <= CONFIG.tactics.fkWallCloseRange
+            && goalLineAngle >= CONFIG.tactics.fkWallMinHeight;
           // The wall takes only the men who are not needed to pick up a runner: an
           // unmarked runner is a receiver the taker could not legally use.
           const wallSize = inWallRange
@@ -454,11 +488,16 @@ export function placeForRestart(e: MatchHost) {
         if (attackingGk) stage(attackingGk, new THREE.Vector3(atkOwnGoal.x + sign * 2.5, 0, 0), ball);
         if (defendingGk) {
           if (isPenalty) {
-            // Law: the defending goalkeeper must remain on the goal line during a
-            // penalty kick. Place the GK on the goal line, aligned with the ball's
-            // z-coordinate (clamped to the posts) so the keeper covers the centre.
-            const gkZ = THREE.MathUtils.clamp(ball.z, -goalHalf, goalHalf);
-            stage(defendingGk, new THREE.Vector3(ownGoal.x, 0, gkZ), ball);
+            // Law 14: the defending goalkeeper must remain on the goal line, between
+            // the posts. `stage()` clamps every body to ±(halfL − 0.8) so field
+            // players stay in play — that pulled the keeper 0.8 m off his line. The
+            // keeper is placed directly, and `stepPlayers` grants him the buffer
+            // margin while the penalty is pending so the clamp cannot undo it.
+            const gkZ = THREE.MathUtils.clamp(ball.z, -goalHalf + 0.1, goalHalf - 0.1);
+            defendingGk.pos.set(ownGoal.x, 0, gkZ);
+            defendingGk.vel.set(0, 0, 0);
+            defendingGk.moveTarget.copy(defendingGk.pos);
+            face(defendingGk, ball);
           } else {
             const gkSpot = keeperPositionTarget(ball, ownGoal, e.ai.attackSign(defendingGk.team, e.rules.half));
             stage(defendingGk, gkSpot.target, ball);
@@ -521,6 +560,15 @@ export function sampleRestartTarget(
   rng: SeededRandom = e.rng,
 ): RestartTarget {
   const picked = sampleRestartTargetRaw(e, pr, taker, rng);
+  // A penalty — and a direct free kick inside shooting range — aims at the GOAL
+  // MOUTH, not at a spot of grass where a delivery should land. Clamping that point
+  // 1.4 m inside the pitch (`outPlaySafetyMargin`) put the aim short of the line: a
+  // penalty at the lane z = ±1.05 was struck along the line to (18.6, ±1.05) and
+  // crossed the goal line at z = ±1.58, i.e. outside the post. Only deliveries are
+  // clamped to the pitch.
+  const onGoal = pr.kind === "penalty"
+    || (pr.kind === "free_kick" && taker.pos.distanceTo(e.ai.goalPos(taker.team, e.rules.half)) < 13);
+  if (onGoal) return picked;
   clampAimToPitch(picked.target);
   return picked;
 }
@@ -590,19 +638,30 @@ function sampleRestartTargetRaw(
     const goalX = goal.x;
     const cornerSide = Math.sign(pr.pos[1]) || 1;
     const zones = [
-      { value: new THREE.Vector3(goalX - sign * 4.2, 0, 0), weight: 0.44 },              // penalty spot
-      { value: new THREE.Vector3(goalX - sign * 2.6, 0, -cornerSide * 2.6), weight: 0.3 }, // far post
-      { value: new THREE.Vector3(goalX - sign * 2.6, 0, cornerSide * 1.4), weight: 0.18 }, // near post
-      { value: new THREE.Vector3(goalX - sign * 6.4, 0, -cornerSide * 1.6), weight: 0.08 },// edge
+      { value: new THREE.Vector3(goalX - sign * 4.4, 0, 0), weight: 0.44 },               // penalty spot
+      { value: new THREE.Vector3(goalX - sign * 4.4, 0, cornerSide * 2.4), weight: 0.18 }, // front post area
+      { value: new THREE.Vector3(goalX - sign * 5.8, 0, -cornerSide * 3.4), weight: 0.3 }, // back post
+      { value: new THREE.Vector3(goalX - sign * 7.6, 0, cornerSide * 2.0), weight: 0.08 }, // edge
     ];
     const zoneTarget = rng.weighted(zones);
+    // Drop the delivery on the ATTACKER'S side of the zone. Defenders mark a step
+    // goal-side of the runner, and a delivery that lands even half a metre short of
+    // an attacker's feet is a defender's ball; aiming marginally behind the spot
+    // (away from goal) is the ball the runner can attack in front of his marker.
+    zoneTarget.x -= sign * 0.8;
     const runner = [...mates].filter((p) => p.role !== "GK").sort((a, b) => {
       const da = Math.hypot(a.pos.x - zoneTarget.x, a.pos.z - zoneTarget.z);
       const db = Math.hypot(b.pos.x - zoneTarget.x, b.pos.z - zoneTarget.z);
       return da - db || tieBreakHash(e.matchSeed, a.idx, a.runSerial, `corner:${pr.id}`)
         - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `corner:${pr.id}`);
     })[0];
-    return runner ? { target: runner.pos.clone(), player: runner } : { target: zoneTarget };
+    // Aim at the ZONE, not at the runner's feet. The runner is staged on his spot
+    // and stands there during the setup, so aiming at him turned every corner into
+    // a flat ball to a stationary man — and the near-post spot is where the keeper
+    // already is, so most corners were simply passed to the goalkeeper. The named
+    // receiver is still the runner closest to the zone; `planNamedPass` predicts
+    // where he can meet a ball played into that zone.
+    return runner ? { target: zoneTarget, player: runner } : { target: zoneTarget };
   }
   const candidates = mates.map((p) => {
     const target = p.pos.clone().addScaledVector(p.vel, 0.35);

@@ -483,11 +483,23 @@ export class AIController {
     if (p.hasBall) return this.store(p.idx, this.possessionDecision(p, snap, noise, novelty, jitter, rng));
 
     if (snap.ballOwner === null && snap.passFlight?.receiver === p.idx) {
-      const target = snap.passFlight.target.clone();
+      // The plan's target is a prediction; the ball is the truth. A lofted delivery
+      // lands a metre or two away from the planned point (sampled loft + pace
+      // scatter), and a receiver who runs at the planned point watches the ball drop
+      // beside him while the nearest defender — who is goal-side and facing the ball —
+      // steps onto it. Chase the projected ball instead whenever it differs.
+      const planned = snap.passFlight.target.clone();
+      const arrival = Math.max(0, snap.passFlight.arrivesAt - now);
+      let target = planned;
+      if (snap.ballVel.length() > 0.5) {
+        const projected = this.projectBall(snap, Math.min(3, Math.max(0.05, arrival))).pos;
+        projected.y = 0;
+        if (projected.distanceTo(planned) > 0.8) target = projected;
+      }
       return this.store(p.idx, {
         moveTarget: target, desiredSpeed: CONFIG.ai.maxSprint, action: null,
-        reason: `RECEIVE #${p.idx}: attack the named delivery`,
-        utilities: { receive: 1, arrival: Math.max(0, snap.passFlight.arrivesAt - now) }, urgent: true,
+        reason: `RECEIVE #${p.idx}: attack the named delivery${target === planned ? "" : " · tracking the real ball"}`,
+        utilities: { receive: 1, arrival }, urgent: true,
         supportJob: "runner", supportMode: "receive after release",
       });
     }
@@ -589,6 +601,9 @@ export class AIController {
     const tackleRisk = p.style.risk * (0.5 + (p.attributes?.physical.aggression ?? 75) / 150)
       // Discipline: a reckless player dives in; a disciplined one stays on his feet.
       * (1.25 - (p.attributes?.mentality.discipline ?? 75) / 150)
+      // Calibrated against the generated roster so the 1.02/1.12 gates below are
+      // reachable; see CONFIG.tackle.riskScale.
+      * CONFIG.tackle.riskScale
       * (cautioned ? CONFIG.referee.bookedCaution : 1);
 
     // Back line steps out to close the central carrier AND the partner covers the shooting lane.
@@ -866,6 +881,16 @@ export class AIController {
         && p.pos.x * sign > CONFIG.pitch.length / 2 - 16;
       const boxTarget = target.x * sign > CONFIG.pitch.length / 2 - 10 && Math.abs(target.z) < 8;
       const crossBall = wideCarrier && boxTarget && currentDistance > 8;
+      // Hard gate: a ground pass whose lane runs inside a defender's reach is a
+      // turnover, not a pass. `laneSafety` only discounts the lane, and the discount
+      // was routinely beaten by the forward-progress bonus. Measured over three
+      // matches: lanes with an opponent inside 1 m were intercepted 29 of 39 times
+      // (74 %), lanes over 1.5 m completed 65–75 %. Lofted balls (pass_long, crosses)
+      // are allowed through the gate because they travel over the defender.
+      if (!crossBall && id !== "pass_long") {
+        const gap = this.laneClearance(snap.ballPos, target, field);
+        if (gap < CONFIG.ai.minGroundPassClearance) continue;
+      }
       const longSwitch = Math.abs(target.z - p.pos.z) > 12 && id === "pass_long" && gain > -2;
       const purpose: Option["purpose"] = backward && (mate.role === "GK" || job?.job === "pivot" || Math.abs(target.z) < T.pivotHalfWidth + 0.5)
         ? "recycle"
@@ -1635,6 +1660,26 @@ export class AIController {
     const covered = snap.players.some((q) => q.team === p.team && q.idx !== p.idx && q.role !== "GK"
       && (q.pos.x - ownGoal.x) * sign < depth - 0.5 && Math.abs(q.pos.z - snap.ballPos.z) < 4);
     return covered ? null : carrier;
+  }
+
+  /**
+   * Smallest lateral distance between a straight ground lane and any opponent
+   * standing across it (Infinity when the lane is clear). Only opponents between
+   * 8 % and 95 % of the way along the lane count: the man pressing the passer and
+   * the man marking the receiver are handled by their own terms.
+   */
+  private laneClearance(a: THREE.Vector3, b: THREE.Vector3, opponents: readonly WorldPlayer[]): number {
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len2 = dx * dx + dz * dz;
+    if (len2 < 0.01) return 0;
+    let gap = Infinity;
+    for (const o of opponents) {
+      const t = ((o.pos.x - a.x) * dx + (o.pos.z - a.z) * dz) / len2;
+      if (t < 0.08 || t > 0.95) continue;
+      const lateral = Math.abs((o.pos.x - a.x) * dz - (o.pos.z - a.z) * dx) / Math.sqrt(len2);
+      gap = Math.min(gap, lateral);
+    }
+    return gap;
   }
 
   /**
