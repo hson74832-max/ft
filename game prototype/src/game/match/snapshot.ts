@@ -1,6 +1,7 @@
 // HUD snapshot: the single read-only view the React layer renders from.
 import { CONFIG } from "../config";
 import { getMotionRegistryVersion } from "../motion";
+import { blueCardRemaining } from "./referee";
 import type { AnimDebug } from "../anims";
 import type { MatchHost } from "./host";
 
@@ -32,11 +33,11 @@ export function buildSnapshot(e: MatchHost) {
     decisions: e.players.map((p) => ({ idx: p.idx, team: p.team, role: p.role, reason: p.decisionReason, utils: p.utilities, x: p.pos.x, z: p.pos.z,
       human: !e.spectator && p.idx === e.humanIdx, job: p.supportJob, mode: p.supportMode,
       target: [p.moveTarget.x, p.moveTarget.z], passOptions: p.passOptions,
-      yellowCards: p.yellowCards, blueCardRemaining: Math.max(0, p.blueCardUntil - e.clock) })),
+      yellowCards: p.yellowCards, blueCardRemaining: blueCardRemaining(e, p) })),
     // Disciplinary state for the HUD: carded players and anyone serving a blue card.
-    cards: e.players.filter((p) => p.yellowCards > 0 || p.blueCardUntil > e.clock)
+    cards: e.players.filter((p) => p.yellowCards > 0 || blueCardRemaining(e, p) > 0)
       .map((p) => ({ idx: p.idx, team: p.team, role: p.role, yellow: p.yellowCards,
-        blueRemaining: Math.max(0, p.blueCardUntil - e.clock) })),
+        blueRemaining: blueCardRemaining(e, p) })),
     tacticalStats: { ...e.tacticalStats },
     attackPlans: [0, 1].map((team) => {
       const plan = e.ai.tactics.current(team);

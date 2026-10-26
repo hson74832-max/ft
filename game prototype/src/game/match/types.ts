@@ -2,6 +2,7 @@
 // These types are the contract between the engine (state + public API) and the
 // per-concern modules that act on it, so they live outside both.
 import * as THREE from "three";
+import type { StrikeCommand } from "../ball";
 import type { AnimationController } from "../anims";
 import type { PlayerRig } from "../playerMesh";
 import type { AIDecision, PlayerAttributes, PlayerStyle } from "../ai";
@@ -103,6 +104,14 @@ export interface PassPlan {
   aimDot: number;
   distance: number;
   arrivalTime: number;
+  /** Named action profile that strikes this delivery (see physics/actionProfiles). */
+  profile?: string;
+  /** Fully resolved strike: sampled speed / angle / spin, plus jitter. */
+  strike?: StrikeCommand & {
+    profile?: { id: string; name: string };
+    spinRpm?: number;
+    angleDeg?: number;
+  };
 }
 
 export type CameraMode = "broadcast" | "follow" | "free";

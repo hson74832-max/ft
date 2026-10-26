@@ -231,3 +231,27 @@ All suites: `selftest`, `kickoff-regression`, `duel-regression` (17),
 `perception-regression` (19), `referee-regression` (18), `receiver-awareness` (8),
 `tactics-test`, `ai-repro`, `support-match` (named passes, recycling, runs, shots,
 central cover, deterministic replay). `npx tsc --noEmit` and `npx vite build` are clean.
+
+---
+
+## Follow-up (2026-10-26): the "silent kickoff" was a negative first frame
+
+The section above correctly showed that no clock-based kickoff announcement guard
+exists, and that every kickoff is announced. The *reported* symptom — a spectator
+match that never starts until Reset — had a different cause, found later the same day
+and documented in `game prototype/docs/PHYSICS-AND-ACTION-PROFILES-2026-10-26.md` §1.
+
+`requestAnimationFrame` delivers the frame's **start** timestamp, which can precede the
+`performance.now()` sampled while arming the loop. The first `dt` was therefore negative;
+`clock` went to about −0.004 s; `isOffPitch()` compared `blueCardUntil > clock` with `0`
+as the "no card" sentinel, so **all ten players** counted as blue-carded and were benched
+off the pitch. `resetPositions("kickoff")` then found no eligible taker, released the ball
+with no owner, and `restartAuto`'s recovery only ran for a ball that had one: a dead ball
+on the centre spot until the user pressed Reset.
+
+Fixes: non-negative `dt` clamp in `App.tsx`/`engine.step`, an explicit sentinel test in
+`isOffPitch`/`blueCardRemaining`, a taker fallback chain in `resetPositions`, a
+nearest-player promotion in `restartAuto`, and a 4 s stall watchdog for any pending
+restart that cannot be staged. `npm run verify:kickoff` now steps a spectator engine
+with `step(-0.004)` and asserts the clock never runs backwards, nobody is benched, and
+the kickoff still launches.

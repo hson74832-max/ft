@@ -6,6 +6,9 @@
 export const CONFIG = {
   pitch: { length: 40, width: 25, wallHeight: 1.1, buffer: 2, goalWidth: 3, goalHeight: 2, goalDepth: 1.2 },
   ball: {
+    // Surface the ball is playing on. Selects the restitution / friction / rolling
+    // coefficient set (see physics/parameters SURFACES) and is live-editable in Settings.
+    surface: "dry" as "dry" | "wet" | "artificial" | "divot",
     // === REAL DATA: BALL (size-5, natural grass, 20 °C) ===
     // Circumference 68–70 cm → Ø 0.219 m → r 0.109 m; mass 410–450 g.
     radius: 0.109,          // m   (CALCULATED from 69 cm circumference)
@@ -87,7 +90,14 @@ export const CONFIG = {
     staminaDrain: 0.05, staminaRegen: 0.08,
     secondHalfDecline: 0.08, // −8 % distance/HSR/sprint volume in the second half
   },
-  match: { totalSeconds: 240, halves: 2, setupFreeze: 2.0, goalCelebrate: 2.2, halftimePause: 3 },
+  match: {
+    totalSeconds: 240, halves: 2, setupFreeze: 2.0, goalCelebrate: 2.2, halftimePause: 3,
+    // A pending restart freezes every player in the restart hold, so a restart that
+    // can never be launched must not be allowed to sit there. When no delivery has
+    // been staged for this long the ball is put into play at the restart spot with
+    // the nearest eligible player of the restarting side.
+    restartStallLimit: 5.0,  // s
+  },
   ai: {
     // === REAL DATA: REACTION & DECISION ===
     reactionDelay: 0.28,    // s  AI decision delay, outfield (0.20–0.40)

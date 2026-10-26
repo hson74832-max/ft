@@ -141,6 +141,8 @@ export class MatchEngine {
   restartWaitReason = "";
   warnedRestartId = -1;
   restartContactT = 0;
+  restartStallId = -1;
+  restartStallT = 0;
   disposed = false;
 
   constructor(canvas: HTMLCanvasElement, opts?: { spectator?: boolean; seed?: number; headless?: boolean; debugAI?: boolean }) {
@@ -239,10 +241,17 @@ export class MatchEngine {
    */
   step(realDt: number) {
     if (this.disposed) return;
-    const dt = Math.min(0.05, realDt) * this.timeScale;
+    // Never advance the match backwards. `requestAnimationFrame` timestamps can be a
+    // few milliseconds EARLIER than the `performance.now()` the loop armed itself
+    // with (the timestamp is the frame start), which made the first step negative:
+    // the clock ran backwards, every `blueCardUntil (0) > clock` test was true, and
+    // the whole squad was treated as carded. A negative delta is not a simulation
+    // input — clamp it away, and clamp the time scale the same way.
+    const safeRealDt = Math.max(0, Number.isFinite(realDt) ? realDt : 0);
+    const dt = Math.min(0.05, safeRealDt) * Math.max(0, this.timeScale);
     this.clock += dt;
     // fps
-    this.fpsAcc += realDt; this.fpsN++; this.fpsT += realDt;
+    this.fpsAcc += safeRealDt; this.fpsN++; this.fpsT += safeRealDt;
     if (this.fpsT > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; this.fpsT = 0; }
 
     this.rules.update(dt);
@@ -253,8 +262,13 @@ export class MatchEngine {
       this.restartRetries = 0;
       this.restartStartedId = -1;
       this.restartLaunchedId = -1;
+      this.restartStallId = -1;
+      this.restartStallT = 0;
     }
-    if (!restart) { this.restartStartedId = -1; this.restartLaunchedId = -1; this.restartWaitReason = ""; }
+    if (!restart) {
+      this.restartStartedId = -1; this.restartLaunchedId = -1; this.restartWaitReason = "";
+      this.restartStallId = -1; this.restartStallT = 0;
+    }
 
     const live = this.rules.live;
     const frozen = this.rules.frozen;

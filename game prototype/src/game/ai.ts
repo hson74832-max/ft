@@ -1,6 +1,7 @@
 // AI decision layer. Spatial targets, marking, offside discipline, and seeded utility choices.
 import * as THREE from "three";
 import { CONFIG, FORMATIONS } from "./config";
+import { predictTrajectory } from "./ball";
 import { clipExists } from "./anims";
 import { SeededRandom, streamSeed, tieBreakHash } from "./random";
 import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, spaceAhead, type RunType, type SupportJob } from "./tactics";
@@ -153,6 +154,12 @@ export interface PassFlight {
 
 export interface WorldSnap {
   ballPos: THREE.Vector3; ballVel: THREE.Vector3;
+  /** Live ball rotation (rad/s). Optional: older snapshots have none. */
+  ballSpin?: THREE.Vector3;
+  /** Seconds since the last strike, for shank/knuckle timing. */
+  ballAge?: number;
+  /** Surface the ball is playing on (seeded bounce response). */
+  ballSurface?: "dry" | "wet" | "artificial" | "divot";
   ballOwner: number | null; ballOwnerTeam: number | null;
   players: WorldPlayer[];
   time: number; half: 1 | 2; matchSeed: number;
@@ -183,6 +190,8 @@ export interface AIDecision {
   runType?: RunType;
   runTriggered?: boolean;
   passPurpose?: "progress" | "recycle" | "switch" | "penetrate";
+  /** The option was scored as a cross into the box (delivery profile comes from this). */
+  passCross?: boolean;
   passOptions?: { receiver: number; lane: number; space: number; gain: number; score: number; purpose: string }[];
 }
 
@@ -1008,7 +1017,7 @@ export class AIController {
     }
     if (best && best.score > Math.max(0.4, carry) && best.lane > 0.35) {
       return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: best.id, actionTarget: best.target,
-        passTo: best.mate.idx, passPurpose: best.purpose, noveltyKey: best.key,
+        passTo: best.mate.idx, passPurpose: best.purpose, passCross: best.crossBall, noveltyKey: best.key,
         reason: `${best.purpose.toUpperCase()} -> #${best.mate.idx} ${best.mate.role}: lane ${best.lane.toFixed(2)}, space ${best.space.toFixed(1)}m, gain ${best.gain.toFixed(1)}m${best.crossesLine ? ", line broken" : ""} · ${phase} · ${runsOn}`,
         utilities, passOptions, urgent: needsReset || best.purpose === "penetrate" || phase === "transition" };
     }
@@ -1456,44 +1465,48 @@ export class AIController {
     return best;
   }
 
-  private projectBall(snap: WorldSnap, t: number): BallSample {
-    // Matches stepBallPhysics: quadratic aero drag a = DRAG_K·v² while airborne,
-    // then constant rolling resistance once the ball is on the grass.
-    const B = CONFIG.ball;
-    const area = Math.PI * B.radius * B.radius;
-    const kDrag = 0.5 * B.airDensity * B.dragCoefficient * area / B.mass;
-    const pos = snap.ballPos.clone();
-    const v0 = snap.ballVel;
-    const speed0 = Math.max(v0.length(), 0.01);
+  /**
+   * Ball projection with the *real* flight model, not an analytic approximation.
+   *
+   * The old version integrated a drag-only parabola with a constant Cd, which
+   * ignored the drag crisis, the Magnus force, the spin decay and every bounce —
+   * so a curled cross or a dipping shot was projected as a straight line and the
+   * AI intercepted the wrong point. The trajectory is now stepped once with
+   * `predictTrajectory` (120 Hz physics, surfaces, spin) and interpolated; the
+   * cache makes the per-frame cost negligible.
+   */
+  private trajectoryCache: { key: string; samples: { t: number; pos: THREE.Vector3 }[] } | null = null;
 
-    // Airborne time until first ground contact (solve y(t) = radius).
-    let tGround = t;
-    const disc = v0.y * v0.y + 2 * B.gravity * (pos.y - B.radius);
-    if (disc >= 0) {
-      const tHit = (-v0.y + Math.sqrt(disc)) / B.gravity;
-      if (tHit > 0 && tHit < t) tGround = tHit;
+  private projectBall(snap: WorldSnap, t: number): BallSample {
+    const v = snap.ballVel;
+    const spin = snap.ballSpin ?? new THREE.Vector3();
+    const key = `${snap.ballPos.x.toFixed(2)}:${snap.ballPos.y.toFixed(2)}:${snap.ballPos.z.toFixed(2)}:`
+      + `${v.x.toFixed(2)}:${v.y.toFixed(2)}:${v.z.toFixed(2)}:${spin.length().toFixed(1)}`;
+    if (!this.trajectoryCache || this.trajectoryCache.key !== key) {
+      const horizon = Math.max(0.5, CONFIG.ai.interceptHorizon + 0.35);
+      const samples = predictTrajectory(
+        { pos: snap.ballPos.clone(), vel: v.clone(), spin: spin.clone(), surface: snap.ballSurface },
+        horizon, 1 / 30, snap.ballSurface,
+      );
+      this.trajectoryCache = { key, samples };
     }
-    // Quadratic drag: v(t) = v0 / (1 + k·v0·t), distance = ln(1 + k·v0·t) / k
-    const airTravel = (1 / kDrag) * Math.log(1 + kDrag * speed0 * tGround);
-    if (speed0 > 0.01) {
-      pos.x = snap.ballPos.x + (v0.x / speed0) * airTravel;
-      pos.z = snap.ballPos.z + (v0.z / speed0) * airTravel;
+    const samples = this.trajectoryCache.samples;
+    const tt = Math.max(0, Number.isFinite(t) ? t : 0);
+    let prev = samples[0];
+    let next: { t: number; pos: THREE.Vector3 } | null = null;
+    for (let i = 1; i < samples.length; i++) {
+      if (samples[i].t >= tt) { next = samples[i]; break; }
+      prev = samples[i];
     }
-    pos.y = snap.ballPos.y + v0.y * tGround - 0.5 * B.gravity * tGround * tGround;
-    if (tGround < t) {
-      // rolling phase: v(t) = v_ground − rollingDecel·(t − tGround), distance = v·Δt − ½·a·Δt²
-      pos.y = B.radius;
-      const vGround = speed0 / (1 + kDrag * speed0 * tGround); // air-drag-reduced speed at landing
-      const dtRoll = t - tGround;
-      const rollDist = vGround * dtRoll - 0.5 * B.rollingDecel * dtRoll * dtRoll;
-      if (speed0 > 0.01) {
-        pos.x += (v0.x / speed0) * Math.max(0, rollDist);
-        pos.z += (v0.z / speed0) * Math.max(0, rollDist);
-      }
+    const pos = prev.pos.clone();
+    if (next) {
+      const span = Math.max(1e-6, next.t - prev.t);
+      const f = THREE.MathUtils.clamp((tt - prev.t) / span, 0, 1);
+      pos.lerp(next.pos, f);
     }
     pos.x = THREE.MathUtils.clamp(pos.x, -CONFIG.pitch.length / 2 + 0.2, CONFIG.pitch.length / 2 - 0.2);
     pos.z = THREE.MathUtils.clamp(pos.z, -CONFIG.pitch.width / 2 + 0.2, CONFIG.pitch.width / 2 - 0.2);
-    return { t, pos };
+    return { t: tt, pos };
   }
 
   private segmentOpenness(a: THREE.Vector3, b: THREE.Vector3, opponents: WorldPlayer[]): number {

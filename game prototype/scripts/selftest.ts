@@ -6,6 +6,7 @@ import { AIController, type PlayerStyle, type WorldPlayer, type WorldSnap } from
 import { parseFieldMotionJSON, validateFieldMotionAgainstSkeleton, sampleFieldMotion } from "../src/game/motion";
 import { CONFIG } from "../src/game/config";
 import { stepBallPhysics, kickBall, kickPowerForRange, kickRangeForPower, dragCoefficientAt, type BallState } from "../src/game/ball";
+import { CORE_PHYSICS } from "../src/game/physics/parameters";
 import { REAL_DATA } from "../src/game/config";
 import { passAimDot, passAimIsValid, predictReceiverPosition, resolveNamedReceiver } from "../src/game/passing";
 import { passProfile } from "../src/game/match/passPlanning";
@@ -82,9 +83,11 @@ function freshBall(y = 0.11): BallState {
 }
 
 // Speed-dependent drag (the dataset requires Cd to vary, not be constant).
-check("drag is subcritical below 10 m/s (Cd≈0.50)", Math.abs(dragCoefficientAt(8) - 0.50) < 1e-6, `${dragCoefficientAt(8)}`);
-check("drag is supercritical above 14 m/s (Cd≈0.25)", Math.abs(dragCoefficientAt(25) - 0.25) < 1e-6, `${dragCoefficientAt(25)}`);
-check("drag transitions across the crisis", dragCoefficientAt(12) < 0.50 && dragCoefficientAt(12) > 0.25, `${dragCoefficientAt(12).toFixed(3)} at 12 m/s`);
+const cdLow = CORE_PHYSICS.drag_coefficient_low_speed.mean;
+const cdHigh = CORE_PHYSICS.drag_coefficient_high_speed.mean;
+check("drag is subcritical below 10 m/s (Cd high)", Math.abs(dragCoefficientAt(8) - cdLow) < 1e-6, `${dragCoefficientAt(8)}`);
+check("drag is supercritical above 20 m/s (Cd low)", Math.abs(dragCoefficientAt(25) - cdHigh) < 1e-6, `${dragCoefficientAt(25)}`);
+check("drag transitions across the crisis", dragCoefficientAt(12) < cdLow && dragCoefficientAt(12) > cdHigh, `${dragCoefficientAt(12).toFixed(3)} at 12 m/s`);
 
 // Sidespin uses real shot-level spin (≈350 rpm → ≈36.7 rad/s).
 {

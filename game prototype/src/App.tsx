@@ -60,7 +60,10 @@ export default function App() {
     let raf = 0;
     let last = performance.now();
     const loop = (now: number) => {
-      const dt = Math.min(0.1, (now - last) / 1000);
+      // rAF timestamps are frame-start times: the first one can precede the
+      // `performance.now()` captured above, so clamp the delta instead of stepping
+      // the match backwards.
+      const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
       last = now;
       if (!pausedRef.current) eng.step(dt);
       else eng.renderer.render(eng.scene, eng.camera);
