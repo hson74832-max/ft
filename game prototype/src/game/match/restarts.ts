@@ -57,10 +57,16 @@ export function resetPositions(e: MatchHost, kind: string) {
     const sign = e.ai.attackSign(kickTeam, e.rules.half);
     // Derive the two kickoff candidates from the roster instead of assuming
     // exactly five players per team and fixed indices 3 and 4.
-    const eligible = e.players.filter((p) => p.team === kickTeam && !isOffPitch(e, p));
-    const attackers = eligible.filter((p) => p.role === "MID" || p.role === "FWD");
-    const outfield = eligible.filter((p) => p.role !== "GK");
-    const candidates = (attackers.length >= 2 ? attackers : outfield).slice(0, 2);
+    const squad = e.players.filter((p) => p.team === kickTeam);
+    const eligible = squad.filter((p) => !isOffPitch(e, p));
+    // A staging pass with no eligible body cannot be left without a taker: that is
+    // what turns a kickoff into a dead ball nobody may touch (the ball is released
+    // here and no restart can ever be launched). Fall back through the squad and
+    // then the whole roster, so staging always produces a taker for the ball.
+    const usable = eligible.length ? eligible : squad.length ? squad : e.players;
+    const attackers = usable.filter((p) => p.role === "MID" || p.role === "FWD");
+    const outfield = usable.filter((p) => p.role !== "GK");
+    const candidates = (attackers.length >= 2 ? attackers : outfield.length ? outfield : usable).slice(0, 2);
     const kicker = candidates.length
       ? stagingRng.weighted(candidates.map((p) => ({ value: p, weight: p.style.directness + p.style.creativity * 0.45 })))
       : null;
@@ -106,6 +112,7 @@ export function resetPositions(e: MatchHost, kind: string) {
   // blue-carded player may not take part, so put him back on his bench spot.
   sendOffPitchPlayersToBench(e);
   e.restartStartedId = -1; e.restartLaunchedId = -1; e.restartRetries = 0; e.restartContactT = 0;
+  e.restartStallId = -1; e.restartStallT = 0;
   e.warnedRestartId = -1;
   if (e.rules.pendingRestart && e.rules.pendingRestart.kind !== "kickoff") e.rules.pendingRestart = null;
   e.restartAutoT = 0.6;
@@ -470,6 +477,7 @@ export function placeForRestart(e: MatchHost) {
     }
   }
   e.restartAutoT = 0.55;
+  e.restartStallId = -1; e.restartStallT = 0;
   // Every branch above places players from a formation/shape template. A
   // blue-carded player may not stand in that shape — put him back on his bench.
   sendOffPitchPlayersToBench(e);
@@ -634,6 +642,50 @@ export function restartBlockReason(e: MatchHost, pr: NonNullable<RulesEngine["pe
   return "";
 }
 
+/**
+ * Pending-restart stall watchdog.
+ *
+ * Every player is held in the restart pose while a restart is pending, so a restart
+ * that cannot be staged — no taker, a taker stuck in a clip that never resolves, a
+ * staging pass that found nobody eligible — freezes the match at the ball with nothing
+ * on screen but idle bodies. That is exactly the "Watch CPU vs CPU" symptom: the kickoff
+ * had no taker and the ball sat on the centre spot until the user pressed Reset.
+ *
+ * After `CONFIG.match.restartStallLimit` seconds the game gets the ball back: the
+ * nearest eligible player of the restarting side is moved to the restart spot, given
+ * possession and the restart is closed. Called every frame while a restart is pending,
+ * including during SETUP, so a hung setup cannot outlive the limit either.
+ */
+export function restartStallCheck(e: MatchHost, dt: number): void {
+  const pr = e.rules.pendingRestart;
+  if (!pr || e.restartLaunchedId === pr.id) return;
+  if (e.restartStallId !== pr.id) { e.restartStallId = pr.id; e.restartStallT = 0; }
+  e.restartStallT += dt;
+  if (e.restartStallT < CONFIG.match.restartStallLimit) return;
+  const eligible = e.players.filter((p) => p.team === pr.team && !isOffPitch(e, p));
+  const pool = eligible.length ? eligible : e.players;
+  const nearest = [...pool].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos)
+    || tieBreakHash(e.matchSeed, a.idx, a.runSerial, `restart-stall:${pr.id}`)
+      - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `restart-stall:${pr.id}`))[0];
+  if (!nearest) return;
+  const margin = CONFIG.pitch.buffer;
+  nearest.pos.set(
+    THREE.MathUtils.clamp(pr.pos[0], -CONFIG.pitch.length / 2 + margin, CONFIG.pitch.length / 2 - margin),
+    0,
+    THREE.MathUtils.clamp(pr.pos[1], -CONFIG.pitch.width / 2 + margin, CONFIG.pitch.width / 2 - margin),
+  );
+  nearest.moveTarget.copy(nearest.pos);
+  nearest.vel.set(0, 0, 0);
+  nearest.desiredSpeed = 0;
+  e.restartLaunchedId = pr.id;
+  e.restartStallId = -1;
+  e.restartStallT = 0;
+  e.rules.pendingRestart = null;
+  releaseRestartToTaker(e, nearest);
+  e.rules.whistle(`Restart released — ${pr.kind.replace("_", " ")} could not be staged`);
+  aiEvent(e, `RESTART STALL RELEASED #${nearest.idx} · ${pr.kind} pending ${CONFIG.match.restartStallLimit}s`);
+}
+
 /** Take the pending restart once the taker and the law allow it. */
 export function restartAuto(e: MatchHost, dt: number) {
   const pr = e.rules.pendingRestart;
@@ -677,6 +729,27 @@ export function restartAuto(e: MatchHost, dt: number) {
     if (owner?.team === pr.team) {
       owner.restartTaker = true;
       taker = owner;
+    }
+  }
+  // Nobody owns the ball and nobody is flagged: the staging lost its taker (a
+  // re-stage while the squad was momentarily unavailable, a card, a hand-edited
+  // roster). Give the ball to the nearest eligible player of the restarting side
+  // rather than retrying forever — a restart must never be a dead ball.
+  if (!taker) {
+    const eligible = e.players.filter((p) => p.team === pr.team && !isOffPitch(e, p));
+    const pool = eligible.length ? eligible : e.players;
+    const nearest = [...pool].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos)
+      || tieBreakHash(e.matchSeed, a.idx, a.runSerial, `restart-taker:${pr.id}`)
+        - tieBreakHash(e.matchSeed, b.idx, b.runSerial, `restart-taker:${pr.id}`))[0];
+    if (nearest) {
+      nearest.restartTaker = true;
+      nearest.pendingKick = null;
+      nearest.moveTarget.copy(nearest.pos);
+      nearest.desiredSpeed = 0;
+      e.ball.possess(nearest.idx, nearest.team);
+      e.ball.pos.set(pr.pos[0], CONFIG.ball.radius, pr.pos[1]);
+      taker = nearest;
+      aiEvent(e, `RESTART taker restored → #${nearest.idx} ${nearest.role} for ${pr.kind}`);
     }
   }
   if (!taker || taker.anim.busy) { e.restartAutoT = 0.15; return; }

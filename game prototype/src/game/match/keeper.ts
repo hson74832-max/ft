@@ -4,6 +4,8 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { kickRangeForPower } from "../ball";
+import { ACTION_PROFILES, resolveStrike } from "../physics/actionProfiles";
+import { SeededRandom, streamSeed } from "../random";
 import { startAction } from "./actions";
 import { aiEvent } from "./debug";
 import { isOffPitch } from "./referee";
@@ -24,7 +26,18 @@ function directClearance(e: MatchHost, gk: EnginePlayer, target: THREE.Vector3, 
   e.ball.release();
   e.ball.lastTouch = gk.idx;
   e.ball.lastTouchTeam = gk.team;
-  e.ball.kick(dir, power, loft);
+  // The forced clearance is still a named action profile — the keeper's punt —
+  // resolved with a deterministic stream so the hold-limit release is repeatable.
+  const strike = resolveStrike(ACTION_PROFILES.gk_punt, {
+    distance: Math.max(20, target.distanceTo(e.ball.pos)),
+    startHeight: e.ball.pos.y,
+    rng: new SeededRandom(streamSeed(e.matchSeed, `gk-forced:${gk.idx}:${e.clock.toFixed(2)}`)),
+    accuracy: gk.attributes.goalkeeping.kicking,
+    directSpeed: true,
+    intensity: 0.85,
+    surface: e.ball.surface,
+  });
+  e.ball.strike(dir, { ...strike, speed: power, loft });
   e.openPlayKickCount++;
 }
 

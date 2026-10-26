@@ -11,7 +11,7 @@ import { aiControl, humanControl } from "./control";
 import { onContact } from "./contacts";
 import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
-import { restartAuto } from "./restarts";
+import { restartAuto, restartStallCheck } from "./restarts";
 import { decayTackleTimers } from "./tackles";
 import { benchSpot, blueCardRemaining, isOffPitch, updateBlueCards } from "./referee";
 import { scanHeadYaw, updatePerception } from "./perception";
@@ -22,6 +22,7 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
   const ownerIdx = e.ball.possessedBy;
   const snap: WorldSnap = {
     ballPos: e.ball.pos.clone(), ballVel: e.ball.vel.clone(),
+    ballSpin: e.ball.spin.clone(), ballAge: e.ball.age, ballSurface: e.ball.surface,
     ballOwner: ownerIdx, ballOwnerTeam: e.ball.ownerTeam,
     // A blue-carded player is off the pitch: he is not a passing option, not a
     // marker and not an opponent, so the AI picture leaves him out entirely.
@@ -296,7 +297,13 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
  * body deflections, then run the possession / out-of-play / restart logic.
  */
 export function stepBall(e: MatchHost, dt: number, live: boolean) {
+  // The pitch surface is live-editable in Settings: keep the ball's coefficient set
+  // in sync with the setting rather than freezing it at construction.
+  if (e.ball.surface !== CONFIG.ball.surface) e.ball.surface = CONFIG.ball.surface;
   // The live ball owner can change during a contact event in this frame.
+  // A restart that cannot be staged must not freeze the match: the watchdog runs
+  // during SETUP as well as INPLAY (see restartStallCheck).
+  restartStallCheck(e, dt);
   const currentOwner = e.ball.possessedBy !== null ? e.players[e.ball.possessedBy] : null;
   const heldRestart = e.rules.pendingRestart && e.restartLaunchedId !== e.rules.pendingRestart.id
     ? e.rules.pendingRestart : null;

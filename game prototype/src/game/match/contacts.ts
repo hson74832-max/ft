@@ -4,11 +4,15 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { passAimDot, passAimIsValid } from "../passing";
-import { tieBreakHash } from "../random";
+import { SeededRandom, tieBreakHash } from "../random";
+import {
+  ACTION_PROFILES, chooseProfile, profileStream, resolveStrike,
+  type ActionProfile, type ResolvedStrike,
+} from "../physics/actionProfiles";
 import { startAction } from "./actions";
 import { aiEvent } from "./debug";
 import { captureOffsideAtKick, flagOffside } from "./offside";
-import { planNamedPass, recordPass } from "./passPlanning";
+import { laneOpenness, planNamedPass, recordPass } from "./passPlanning";
 import { advantageAvailable, isOffPitch, issueCards } from "./referee";
 import { setHumanPlayer } from "./roster";
 import { releaseRestartToTaker } from "./restarts";
@@ -24,6 +28,29 @@ function releaseToKick(e: MatchHost, p: EnginePlayer) {
   e.ball.release();
   e.ball.lastTouch = p.idx;
   e.ball.lastTouchTeam = p.team;
+}
+
+/**
+ * Resolve the named profile that strikes this ball, using a per-kick deterministic
+ * stream so sampling physics never shifts the AI's random draws.
+ */
+function strikeProfile(
+  e: MatchHost, p: EnginePlayer, profile: ActionProfile, key: string,
+  opts: { distance: number; accuracy?: number; curveSide?: number; speedScale?: number; directSpeed?: boolean; intensity?: number; angleDeg?: number },
+): ResolvedStrike {
+  const rng = new SeededRandom(profileStream(e.matchSeed, p.idx, p.runSerial, key));
+  return resolveStrike(profile, {
+    rng,
+    distance: opts.distance,
+    startHeight: e.ball.pos.y,
+    accuracy: opts.accuracy,
+    curveSide: opts.curveSide,
+    speedScale: opts.speedScale,
+    directSpeed: opts.directSpeed,
+    intensity: opts.intensity,
+    angleDeg: opts.angleDeg,
+    surface: e.ball.surface,
+  });
 }
 
 /** World position of the limb the action strikes with (foot / head / hand). */
@@ -86,7 +113,14 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         if (aim.lengthSq() < 1e-4) aim.set(e.ai.attackSign(p.team, e.rules.half), 0, 0);
         releaseToKick(e, p);
         captureOffsideAtKick(e, p, activeRestart?.kind);
-        e.ball.kick(aim.normalize(), pk.power ?? CONFIG.player.kickPower.punt, 0.42);
+        const boot = strikeProfile(e, p, ACTION_PROFILES.gk_punt, `forced-punt:${activeRestart?.id ?? 0}`, {
+          distance: Math.max(20, aim.length()),
+          accuracy: p.attributes.goalkeeping.kicking,
+          directSpeed: true,
+          intensity: 0.85,
+        });
+        e.ball.strike(aim.normalize(), boot);
+        aiEvent(e, `STRIKE ${ACTION_PROFILES.gk_punt.name} (forced) · ${boot.speed.toFixed(1)} m/s`);
         ballReleasedByAction = true;
         if (!activeRestart) e.openPlayKickCount++;
         break;
@@ -103,8 +137,13 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
           < CONFIG.pitch.length * 0.35;
         if (action === "pass_long" && clearanceDeep && pk?.target && pk.passTo === undefined) {
           releaseToKick(e, p);
-          // Lofted so it clears the bodies in front of him rather than rolling into them.
-          e.ball.kick(dirTo(pk.target), CONFIG.player.kickPower.clear, 0.32);
+          // Hoofed away: a lofted clearance that clears the bodies in front of him
+          // rather than rolling into them.
+          const clear = strikeProfile(e, p, ACTION_PROFILES.clearance, `clearance:${activeRestart?.id ?? 0}`, {
+            distance: Math.max(10, p.pos.distanceTo(pk.target)), accuracy: 45, directSpeed: true, intensity: 0.85,
+          });
+          e.ball.strike(dirTo(pk.target), clear);
+          aiEvent(e, `STRIKE ${ACTION_PROFILES.clearance.name} · ${clear.speed.toFixed(1)} m/s · ${clear.angleDeg.toFixed(1)}°`);
           ballReleasedByAction = true;
           if (!activeRestart) e.openPlayKickCount++;
           e.rules.emit("POSSESSION", `${p.team === 0 ? "RED" : "BLUE"} clearance by #${p.idx} ${p.role}`, p.team);
@@ -122,7 +161,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const passError = CONFIG.ai.passError * (75 - passRating) / 75
         * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `pass-accuracy:${action}:${pk?.passTo ?? -1}`) * 2 - 1);
       const passDirection = plan.target.clone().sub(e.ball.pos).setY(0).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), passError);
-      e.ball.kick(passDirection, plan.power, plan.loft);
+      const passStrike = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES[plan.profile ?? "pass_short"], `pass:${action}`, {
+        distance: plan.distance, accuracy: passRating, curveSide: p.style.finesseSide,
+      });
+      e.ball.strike(passDirection, { ...passStrike, speed: plan.power, loft: plan.loft });
+      aiEvent(e, `STRIKE ${passStrike.profile?.name ?? action} · ${plan.power.toFixed(1)} m/s · ${(plan.loft * 57.2958).toFixed(1)}° · ${(passStrike.spinRpm ?? 0).toFixed(0)} rpm`);
       const launchDot = passAimDot(e.ball.pos, e.ball.vel, plan.target);
       if (!passAimIsValid(launchDot, CONFIG.ai.passAimConeDegrees)) {
         e.ball.vel.set(0, 0, 0); e.ball.possess(p.idx, p.team);
@@ -151,8 +194,37 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const shotError = CONFIG.ai.passError * (75 - shotRating) / 75
         * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `shot-accuracy:${action}:${activeRestart?.kind ?? "open"}`) * 2 - 1);
       const shotDirection = dirTo(tgt).applyAxisAngle(new THREE.Vector3(0, 1, 0), shotError);
-      const spin = action === "shoot_finesse" ? p.style.finesseSide * (0.5 + p.attributes.passing.curve / 150) : 0;
-      e.ball.kick(shotDirection, power, action === "shoot_volley" ? 0.25 : 0.14, spin);
+      // Profile by situation, not by action name: a blocked lane gets the dipping
+      // topspin ball, a clean one the low driven strike, a 1v1 the chip.
+      const lane = laneOpenness(e.ball.pos, tgt, e.players.filter((o) => o.team !== p.team));
+      const shotDistance = p.pos.distanceTo(tgt);
+      const choiceRng = new SeededRandom(profileStream(e.matchSeed, p.idx, p.runSerial, `shot-choice:${action}`));
+      // A free kick is struck as a free kick: curled around the wall when the lane is
+      // blocked, a knuckleball when the range is long and the wall is set.
+      const isFreeKick = activeRestart?.kind === "free_kick" && shotDistance > 16;
+      const shotChoice = chooseProfile(
+        isFreeKick
+          ? { family: "free_kick" }
+          : { family: "shot", action: action === "shoot_volley" ? "shoot_volley" : action === "shoot_finesse" ? "shoot_finesse" : "shoot_normal" },
+        {
+          rng: choiceRng,
+          distance: shotDistance,
+          lane,
+          side: (Math.sign(tgt.z) || 0) as -1 | 0 | 1,
+          inBox: Math.abs(p.pos.x - e.ai.goalPos(p.team, e.rules.half).x) < 5.5 && Math.abs(p.pos.z) < 6.2,
+          airborne: action === "shoot_volley",
+        },
+      );
+      const shotStrike = strikeProfile(e, p, shotChoice, `shot:${action}:${activeRestart?.id ?? 0}`, {
+        distance: shotDistance,
+        accuracy: shotRating,
+        curveSide: p.style.finesseSide,
+        speedScale: 0.55 + (action === "shoot_volley" ? p.attributes.shooting.volleys : p.attributes.shooting.shotPower) / 150,
+        directSpeed: true,
+        intensity: THREE.MathUtils.clamp(power / Math.max(1, CONFIG.player.kickPower.shoot), 0.35, 1),
+      });
+      e.ball.strike(shotDirection, shotStrike);
+      aiEvent(e, `STRIKE ${shotChoice.name} · ${shotStrike.speed.toFixed(1)} m/s · ${shotStrike.angleDeg.toFixed(1)}° · ${shotStrike.spinRpm.toFixed(0)} rpm`);
       e.tacticalStats.shots++;
       ballReleasedByAction = true;
       if (!activeRestart) e.openPlayKickCount++;
@@ -164,7 +236,15 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const tgt = pk?.target ?? e.ai.goalPos(p.team, e.rules.half);
       captureOffsideAtKick(e, p, activeRestart?.kind);
       releaseToKick(e, p);
-      e.ball.kick(dirTo(tgt), kp.header * (0.5 + p.attributes.shooting.heading / 150), 0.2);
+      const head = strikeProfile(e, p, ACTION_PROFILES.header_attacking, `header:${activeRestart?.id ?? 0}`, {
+        distance: p.pos.distanceTo(tgt),
+        accuracy: p.attributes.shooting.heading,
+        speedScale: 0.6 + p.attributes.shooting.heading / 150,
+        directSpeed: true,
+        intensity: 0.7,
+      });
+      e.ball.strike(dirTo(tgt), head);
+      aiEvent(e, `STRIKE ${head.profile.name} · ${head.speed.toFixed(1)} m/s · ${head.angleDeg.toFixed(1)}°`);
       ballReleasedByAction = true;
       if (!activeRestart) e.openPlayKickCount++;
       break;
@@ -223,7 +303,10 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         releaseToKick(e, p);
         e.ball.pos.add(new THREE.Vector3(dir.x * CONFIG.tackle.spillDistance, 0, dir.z * CONFIG.tackle.spillDistance));
         e.ball.pos.y = Math.max(CONFIG.ball.radius, e.ball.pos.y);
-        e.ball.kick(new THREE.Vector3(dir.x, 0, dir.z), CONFIG.tackle.spillSpeed, 0.06);
+        const spill = strikeProfile(e, p, ACTION_PROFILES.touch_spill, `spill:${p.runSerial}`, {
+          distance: CONFIG.tackle.spillDistance, accuracy: 30, directSpeed: true, intensity: 0.8,
+        });
+        e.ball.strike(new THREE.Vector3(dir.x, 0, dir.z), spill);
         e.ball.kickedBy = p.idx;
         e.ball.kickAge = 0;
         e.offsideCandidates.clear(); e.offsideTeam = null;
@@ -349,7 +432,13 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const parrying = p.attributes.goalkeeping.parrying;
       away.z += (e.ball.pos.z >= p.pos.z ? 1 : -1) * 0.7 * (0.5 + parrying / 150);
       releaseToKick(e, p);
-      e.ball.kick(away.normalize(), THREE.MathUtils.clamp(speed * (0.55 - parrying / 500), 5, 12), 0.3);
+      const parry = strikeProfile(e, p, ACTION_PROFILES.gk_parry, `parry:${e.clock.toFixed(2)}`, {
+        distance: 6,
+        accuracy: p.attributes.goalkeeping.parrying,
+        directSpeed: true,
+        intensity: THREE.MathUtils.clamp(speed / 34, 0.2, 1),
+      });
+      e.ball.strike(away.normalize(), { ...parry, speed: THREE.MathUtils.clamp(speed * (0.55 - parrying / 500), 5, 12) });
       e.offsideCandidates.clear(); e.offsideTeam = null;
       aiEvent(e, `GK PARRY #${p.idx} (${action}) · ${speed.toFixed(1)} m/s at ${best.toFixed(2)}m`);
       e.rules.emit("SAVE", `GK ${action} — parried!`, p.team);
@@ -365,7 +454,14 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         if (aim.lengthSq() < 1e-4) aim.set(e.ai.attackSign(p.team, e.rules.half), 0, 0);
         releaseToKick(e, p);
         captureOffsideAtKick(e, p, activeRestart?.kind);
-        e.ball.kick(aim.normalize(), pk.power ?? CONFIG.player.kickPower.punt, 0.42);
+        const boot = strikeProfile(e, p, ACTION_PROFILES.gk_punt, `forced-punt:${activeRestart?.id ?? 0}`, {
+          distance: Math.max(20, aim.length()),
+          accuracy: p.attributes.goalkeeping.kicking,
+          directSpeed: true,
+          intensity: 0.85,
+        });
+        e.ball.strike(aim.normalize(), boot);
+        aiEvent(e, `STRIKE ${ACTION_PROFILES.gk_punt.name} (forced) · ${boot.speed.toFixed(1)} m/s`);
         ballReleasedByAction = true;
         if (!activeRestart) e.openPlayKickCount++;
         break;
@@ -376,7 +472,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         break;
       }
       releaseToKick(e, p);
-      e.ball.kick(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), plan.power, plan.loft);
+      const punt = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES.gk_punt, `punt:${action}`, {
+        distance: plan.distance, accuracy: p.attributes.goalkeeping.kicking,
+      });
+      e.ball.strike(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), { ...punt, speed: plan.power, loft: plan.loft });
+      aiEvent(e, `STRIKE ${(punt.profile ?? ACTION_PROFILES.gk_punt).name} · ${plan.power.toFixed(1)} m/s`);
       ballReleasedByAction = true;
       recordPass(e, p, action, plan);
       if (!activeRestart) e.openPlayKickCount++;
@@ -388,7 +488,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
       if (!plan) { p.decisionReason = "GK ROLL CANCELLED · no valid named teammate"; break; }
       releaseToKick(e, p);
-      e.ball.kick(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), plan.power, plan.loft);
+      const roll = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES.gk_roll, `roll:${action}`, {
+        distance: plan.distance, accuracy: p.attributes.goalkeeping.kicking,
+      });
+      e.ball.strike(plan.target.clone().sub(e.ball.pos).setY(0).normalize(), { ...roll, speed: plan.power, loft: plan.loft });
+      aiEvent(e, `STRIKE ${(roll.profile ?? ACTION_PROFILES.gk_roll).name} · ${plan.power.toFixed(1)} m/s`);
       ballReleasedByAction = true;
       recordPass(e, p, action, plan);
       if (!activeRestart) e.openPlayKickCount++;
@@ -403,7 +507,13 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       const cornerError = CONFIG.ai.passError * (75 - p.attributes.passing.corner) / 75
         * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `corner-accuracy:${activeRestart?.id ?? 0}`) * 2 - 1);
       const cornerDirection = plan.target.clone().sub(e.ball.pos).setY(0).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), cornerError);
-      e.ball.kick(cornerDirection, plan.power, plan.loft, p.style.finesseSide * (0.5 + p.attributes.passing.curve / 150));
+      const cornerStrike = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES.corner_inswing, `corner:${activeRestart?.id ?? 0}`, {
+        distance: plan.distance,
+        accuracy: p.attributes.passing.corner,
+        curveSide: -Math.sign(e.ball.pos.z) || 1,
+      });
+      e.ball.strike(cornerDirection, { ...cornerStrike, speed: plan.power, loft: plan.loft });
+      aiEvent(e, `STRIKE ${cornerStrike.profile?.name ?? action} · ${plan.power.toFixed(1)} m/s · ${(cornerStrike.spinRpm ?? 0).toFixed(0)} rpm`);
       ballReleasedByAction = true;
       recordPass(e, p, action, plan);
       if (!activeRestart) e.openPlayKickCount++;
@@ -427,7 +537,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         p.decisionReason = "THROW CANCELLED · aim outside receiver cone";
         break;
       }
-      e.ball.kick(throwAim, plan.power, plan.loft);
+      const throwStrike = plan.strike ?? strikeProfile(e, p, ACTION_PROFILES.throw_in, `throw:${activeRestart?.id ?? 0}`, {
+        distance: plan.distance, accuracy: p.attributes.passing.shortGroundPassing,
+      });
+      e.ball.strike(throwAim, { ...throwStrike, speed: plan.power, loft: plan.loft });
+      aiEvent(e, `STRIKE ${throwStrike.profile?.name ?? action} · ${plan.power.toFixed(1)} m/s`);
       ballReleasedByAction = true;
       recordPass(e, p, action, plan);
       if (!activeRestart) e.openPlayKickCount++;

@@ -1,10 +1,15 @@
-// Pass planning: lane clearance, kick profile, power for a target arrival time,
-// the named-receiver plan and its bookkeeping, plus keeper distribution.
+// Pass planning: lane clearance, the named action profile for the delivery, the
+// power that lands the ball on the target, the named-receiver plan and its
+// bookkeeping, plus keeper distribution.
 import * as THREE from "three";
 import { CONFIG } from "../config";
-import { estimateKickTravelTime, kickRangeForPower, kickPowerForRange } from "../ball";
+import { estimateKickTravelTime, kickMaxRangeFor, kickPowerForRange } from "../ball";
+import {
+  chooseProfile, legacyProfileFor, profileStream, resolveStrike,
+  type ActionProfile, type ResolvedStrike,
+} from "../physics/actionProfiles";
 import { passAimDot, passAimIsValid, predictReceiverRun, resolveNamedReceiver } from "../passing";
-import { tieBreakHash } from "../random";
+import { SeededRandom, tieBreakHash } from "../random";
 import { receiverOffsideAtKick } from "./offside";
 import type { EnginePlayer, GkDistribution, PassPlan } from "./types";
 import type { MatchHost } from "./host";
@@ -24,47 +29,128 @@ export function laneOpenness(a: THREE.Vector3, b: THREE.Vector3, opponents: Engi
   return THREE.MathUtils.clamp(1 - blocked * 0.4, 0, 1);
 }
 
-/** How a delivery is struck: loft, power envelope and the pace it should still carry on arrival. */
-export function passProfile(action: string): { loft: number; maxPower: number; minPower: number; arrival: number } | null {
-  const kp = CONFIG.player.kickPower;
-  switch (action) {
-    case "pass_short": return { loft: 0.025, maxPower: kp.pass, minPower: 0.6, arrival: 5.0 };
-    // A driven long ball has to stay low: at loft 0.06 the ball leaves the ground just
-    // enough to bounce, and each bounce takes 35% of the horizontal speed (restitution),
-    // so a 24 m/s long pass carried 22.2 m — less than an 11 m/s short pass (27.8 m) and
-    // short of the 27 m the AI is willing to aim at. Loft 0.20 calibrates 4–28 m and
-    // carries 31 m flat out, so long balls and crosses actually reach their target.
-    case "pass_long": return { loft: 0.20, maxPower: kp.longPass, minPower: 1.5, arrival: 6.5 };
-    case "pass_through": return { loft: 0.035, maxPower: kp.through, minPower: 1.0, arrival: 4.0 };
-    // Throw-ins and corners are lofted deliveries, not driven balls: high loft gives a
-    // real arc into the danger area (a flat loft made corners look short/driven).
-    case "throw_in": return { loft: 0.45, maxPower: kp.throwIn, minPower: 4, arrival: 0 };
-    case "corner_kick": return { loft: 0.85, maxPower: kp.corner, minPower: 5, arrival: 0 };
-    case "gk_roll": return { loft: 0.01, maxPower: kp.gkRoll, minPower: 1.5, arrival: 3.5 };
-    case "gk_punt": return { loft: 0.42, maxPower: kp.punt, minPower: 8, arrival: 0 };
-    default: return null;
+/** Distance along the lane to the first opponent standing in it (Infinity = clear). */
+export function laneBlockerDistance(a: THREE.Vector3, b: THREE.Vector3, opponents: EnginePlayer[], width = 2.4): number {
+  const seg = b.clone().sub(a).setY(0);
+  const len = Math.max(0.001, seg.length());
+  const dir = seg.clone().divideScalar(len);
+  let best = Infinity;
+  for (const o of opponents) {
+    const rel = o.pos.clone().sub(a).setY(0);
+    const along = rel.dot(dir);
+    if (along <= 0.15 || along >= len) continue;
+    const lateral = Math.abs(rel.x * dir.z - rel.z * dir.x);
+    if (lateral <= width) best = Math.min(best, along);
   }
+  return best;
+}
 
+export interface ProfileEnvelope {
+  loft: number;
+  maxPower: number;
+  minPower: number;
+  arrival: number;
+  profile: ActionProfile;
+}
+
+/** CONFIG kick-power envelope that belongs to a profile's family. */
+function powerKeyFor(profile: ActionProfile): keyof typeof CONFIG.player.kickPower {
+  switch (profile.family) {
+    case "corner": return "corner";
+    case "restart": return "throwIn";
+    case "keeper": return profile.id === "gk_roll" ? "gkRoll" : "punt";
+    case "shot": return "shoot";
+    case "cross": return "longPass";
+    case "header": return "header";
+    case "clearance": return "clear";
+    case "pass":
+      if (profile.id === "pass_short" || profile.id === "pass_medium") return "pass";
+      if (profile.id === "pass_through") return "through";
+      return "longPass";
+    default: return "pass";
+  }
+}
+
+/**
+ * The CONFIG power envelope is chosen by the *action the AI decided on*, not by the
+ * profile that happens to carry it: a 15 m back-pass stays a long ball even when its
+ * lane is open enough to pick the medium-pass profile. Choosing by profile alone
+ * capped that return at the short-pass power (11 m/s), which cannot reach the keeper —
+ * the plan was rejected and the pass silently cancelled.
+ */
+function powerKeyForAction(action: string, profile: ActionProfile): keyof typeof CONFIG.player.kickPower {
+  switch (action) {
+    case "pass_short": return "pass";
+    case "pass_long": return "longPass";
+    case "pass_through": return "through";
+    case "throw_in": return "throwIn";
+    case "corner_kick": return "corner";
+    case "gk_roll": return "gkRoll";
+    case "gk_punt": return "punt";
+    case "header": return "header";
+    default: return powerKeyFor(profile);
+  }
+}
+
+/** A delivery envelope for one named profile: plan-time loft, power band, arrival pace. */
+export function envelopeFor(profile: ActionProfile, action: string): ProfileEnvelope {
+  const kp = CONFIG.player.kickPower;
+  // Aim at the middle of the launch band: the sampled angle of a particular strike
+  // may be higher or lower, but the plan's prediction must not swing with the dice.
+  const midDeg = (profile.launchDeg[0] + profile.launchDeg[1]) / 2;
+  const loft = Math.tan(midDeg * Math.PI / 180);
+  const maxPower = Math.min(kp[powerKeyForAction(action, profile)], profile.speed[1], CONFIG.ball.maxSpeed);
+  const minPower = Math.max(0.6, Math.min(profile.speed[0], maxPower) * 0.55);
+  const arrival = action === "throw_in" || action === "corner_kick" || action === "gk_punt" ? 0 : 4.5;
+  return { loft, maxPower, minPower, arrival, profile };
+}
+
+/**
+ * How a delivery is struck: loft, power envelope and the pace it should still carry
+ * on arrival. The numbers come from the named action profile (launch-angle and speed
+ * bands), so the planner, the power solver and the actual strike share one model.
+ */
+export function passProfile(action: string): ProfileEnvelope | null {
+  const legacy = legacyProfileFor(action);
+  return legacy ? envelopeFor(legacy, action) : null;
 }
 
 /** Physics-calibrated power so the ball still carries `arrival` m/s at `distance`. */
-export function powerForArrival(distance: number, profile: { loft: number; maxPower: number; minPower: number; arrival: number }, startHeight: number): number {
+export function powerForArrival(
+  distance: number, profile: { loft: number; maxPower: number; minPower: number; arrival: number },
+  startHeight: number, spin?: THREE.Vector3,
+): number {
   // Extra free-roll distance needed to shed `arrival` m/s under rolling resistance.
   const extraRoll = profile.arrival > 0 ? (profile.arrival * profile.arrival) / (2 * CONFIG.ball.rollingDecel) : 0;
-  return kickPowerForRange(distance + extraRoll, profile.loft, profile.maxPower, profile.minPower, startHeight);
-
+  return kickPowerForRange(distance + extraRoll, profile.loft, profile.maxPower, profile.minPower, startHeight, spin);
 }
 
-/** Plan a pass to a named receiver: aim point, power and arrival time. */
-export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string, passTo: number | undefined, requestedPower?: number, restartKind?: string): PassPlan | null {
+/** Mid-band spin vector: used to make planning see the same curve the strike will. */
+function planningSpin(profile: ActionProfile, side: number): THREE.Vector3 {
+  const rpm = (profile.spinRpm[0] + profile.spinRpm[1]) / 2;
+  const f = new THREE.Vector3(1, 0, 0);
+  const up = new THREE.Vector3(0, 1, 0);
+  switch (profile.spinType) {
+    case "top": return new THREE.Vector3().crossVectors(up, f).multiplyScalar(rpm * Math.PI / 30);
+    case "side": return up.clone().multiplyScalar((side < 0 ? -1 : 1) * rpm * Math.PI / 30);
+    case "mixed": return new THREE.Vector3().crossVectors(f, up).multiplyScalar(0.8 * rpm * Math.PI / 30)
+      .addScaledVector(up, 0.35 * side * rpm * Math.PI / 30);
+    case "knuckle": return new THREE.Vector3();
+    default: return new THREE.Vector3().crossVectors(f, up).multiplyScalar(rpm * Math.PI / 30);
+  }
+}
+
+/** Plan a pass to a named receiver: profile, aim point, strike and arrival time. */
+export function planNamedPass(
+  e: MatchHost, passer: EnginePlayer, action: string, passTo: number | undefined,
+  requestedPower?: number, restartKind?: string,
+): PassPlan | null {
   const receiver = resolveNamedReceiver(e.players, passer, passTo, action.startsWith("pass_"));
   const baseProfile = passProfile(action);
   if (!receiver || !baseProfile || receiverOffsideAtKick(e, passer, receiver, restartKind)) return null;
-  const profile = { ...baseProfile };
-  // A deliberate foot return to the keeper stays on the grass even when distance made the AI choose pass_long.
-  if (receiver.role === "GK" && action.startsWith("pass_")) profile.loft = 0;
 
   const origin = e.ball.pos.clone();
+  const opponents = e.players.filter((p) => p.team !== passer.team && p.idx !== passer.idx);
   const assignment = !restartKind && e.frameWorld
     ? e.ai.tactics.plan(e.frameWorld, passer.team)?.assignments.get(receiver.idx) : undefined;
   // For a restart the delivery was already aimed at a sampled target (throw-in
@@ -80,22 +166,63 @@ export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string
   let distance = Math.hypot(receiverTarget.x - origin.x, receiverTarget.z - origin.z);
   if (distance < 1.15) return null;
 
-  const maximumReach = kickRangeForPower(profile.maxPower, profile.loft, startHeight);
+  // --- pick the profile by what is in the way -------------------------------
+  const lane = laneOpenness(origin, receiver.pos, opponents);
+  const blockerAlong = laneBlockerDistance(origin, receiver.pos, opponents);
+  // A dedicated per-kick stream: sampling a profile must never move the AI stream.
+  const rng = new SeededRandom(profileStream(e.matchSeed, passer.idx, passer.runSerial, `${action}:${passTo ?? -1}`));
+  // A wide carrier delivering into the box is a cross, not a long pass: the cross
+  // profiles are the ones with the whipped/floated launch and spin bands.
+  const attackGoal = e.ai.goalPos(passer.team, e.rules.half);
+  const wide = Math.abs(origin.z) > CONFIG.pitch.width * 0.26;
+  const intoBox = Math.abs(receiver.pos.x - attackGoal.x) < 13 && Math.abs(receiver.pos.z) < 8.5;
+  // A cross the AI actually decided on is authoritative; the geometry is the fallback
+  // for deliveries the scorer described as a normal pass into a crowded box.
+  const crossIntent = !restartKind && e.ai.lastDecision.get(passer.idx)?.passCross === true;
+  const isCross = (crossIntent || (wide && intoBox)) && distance > 12
+    && (action === "pass_long" || action === "pass_short" || action === "pass_through");
+  const family = action === "corner_kick" ? "corner" as const : isCross ? "cross" as const : "pass" as const;
+  const chosen = chooseProfile(
+    family === "corner" ? { family }
+      : family === "cross" ? { family }
+        : { family, action: action === "pass_long" ? "pass_long" : action === "pass_through" ? "pass_through" : "pass_short" },
+    {
+      rng, distance, lane, blockerAlong,
+      side: (Math.sign(origin.z) || 1) as -1 | 1,
+      // Attacking runners are the tall/heading targets a cross is aimed at.
+      targetHeight: receiver.role === "FWD" ? 1.92 : 1.82,
+      pressed: opponents.some((o) => o.pos.distanceTo(passer.pos) < 2.2),
+    },
+  );
+  // A deliberate foot return to the keeper stays on the grass even when distance made
+  // the AI choose a long ball: the launch angle is forced to zero so the back-pass
+  // rolls to him, exactly as it did before the profile layer existed. A keeper should
+  // never volley a back-pass at his own face.
+  const flatToKeeper = receiver.role === "GK" && action.startsWith("pass_");
+  const profile = flatToKeeper
+    ? { ...chosen, launchDeg: [0, 0] as [number, number], spinType: "back" as const }
+    : chosen;
+  const envelope = envelopeFor(profile, action);
+  const curveSide = action === "corner_kick"
+    ? (profile.id === "corner_inswing" ? -Math.sign(origin.z) || 1 : Math.sign(origin.z) || 1)
+    : (passer.style.finesseSide || 1);
+
+  const maximumReach = kickMaxRangeFor(envelope.maxPower, envelope.loft, startHeight);
   if (distance > maximumReach - 0.35) return null;
-  let power = powerForArrival(distance, profile, startHeight);
+  const spin = planningSpin(profile, curveSide);
+  let power = powerForArrival(distance, envelope, startHeight, spin);
   if (requestedPower !== undefined) {
     // Charge changes pace a little but never overpowers the receiver's measured range.
-    power = THREE.MathUtils.clamp(requestedPower, power * 0.82, Math.min(profile.maxPower, power * 1.08));
+    power = THREE.MathUtils.clamp(requestedPower, power * 0.82, Math.min(envelope.maxPower, power * 1.08));
   }
 
   let arrivalTime = 0;
   for (let i = 0; i < 5; i++) {
-    const travelTime = estimateKickTravelTime(distance, power, profile.loft, startHeight);
+    const travelTime = estimateKickTravelTime(distance, power, envelope.loft, startHeight, spin);
     arrivalTime = travelTime;
-    // The prediction — and therefore the strike power — must use the speed the
-    // receiver can actually reach. A runner sprinting into space covers more ground
-    // than the plan's nominal jog, so a pass aimed at his feet would arrive behind
-    // him; lead it with his sprint speed and weight the kick to match.
+    // The prediction — and therefore the strike — must use the speed the receiver can
+    // actually reach. A runner sprinting into space covers more ground than the plan's
+    // nominal jog, so a pass aimed at his feet would arrive behind him.
     const runningNow = receiver.vel.length() > CONFIG.player.runSpeed;
     const receiverCap = receiver.role === "GK" ? CONFIG.player.runSpeed
       : (action === "pass_through" || runningNow) ? CONFIG.ai.maxSprint
@@ -103,17 +230,41 @@ export function planNamedPass(e: MatchHost, passer: EnginePlayer, action: string
     receiverTarget = predictReceiverRun(receiver.pos, receiver.vel, destination, travelTime, receiverCap);
     distance = Math.hypot(receiverTarget.x - origin.x, receiverTarget.z - origin.z);
     if (distance > maximumReach - 0.35) return null;
-    const rangePower = powerForArrival(distance, profile, startHeight);
+    const rangePower = powerForArrival(distance, envelope, startHeight, spin);
     power = requestedPower === undefined
       ? rangePower
-      : THREE.MathUtils.clamp(requestedPower, rangePower * 0.82, Math.min(profile.maxPower, rangePower * 1.08));
+      : THREE.MathUtils.clamp(requestedPower, rangePower * 0.82, Math.min(envelope.maxPower, rangePower * 1.08));
   }
 
   const aim = receiverTarget.clone().sub(origin).setY(0).normalize();
-  const plannedVelocity = new THREE.Vector3(aim.x * power, power * profile.loft, aim.z * power);
+  // --- resolve the actual strike against the live physics --------------------
+  const accuracy = receiver.role === "GK" ? passer.attributes.goalkeeping.kicking
+    : restartKind === "free_kick" ? passer.attributes.passing.freeKick
+      : action === "pass_long" ? passer.attributes.passing.longGroundPassing
+        : action === "corner_kick" ? passer.attributes.passing.corner
+          : passer.attributes.passing.shortGroundPassing;
+  const strike: ResolvedStrike = resolveStrike(profile, {
+    distance,
+    startHeight,
+    rng,
+    curveSide,
+    accuracy,
+    speedScale: 0.85 + (passer.attributes.passing.shortGroundPassing + passer.attributes.passing.longGroundPassing) / 400,
+    surface: e.ball.surface,
+    // The plan computes its own arrival from the strike below; a full trajectory
+    // prediction here would run for every candidate pass the AI considers.
+    predict: false,
+  });
+  const kickSpeed = Math.min(strike.speed, envelope.maxPower);
+  const loft = strike.loft;
+  const plannedVelocity = new THREE.Vector3(aim.x * kickSpeed, kickSpeed * loft, aim.z * kickSpeed);
   const aimDot = passAimDot(origin, plannedVelocity, receiverTarget);
   if (!passAimIsValid(aimDot, CONFIG.ai.passAimConeDegrees)) return null;
-  return { receiver, target: receiverTarget, power, loft: profile.loft, aimDot, distance, arrivalTime };
+  arrivalTime = estimateKickTravelTime(distance, kickSpeed, loft, startHeight, strike.spin);
+  return {
+    receiver, target: receiverTarget, power: kickSpeed, loft, aimDot, distance, arrivalTime,
+    profile: profile.id, strike: { ...strike, speed: kickSpeed },
+  };
 }
 
 /** Book-keeping for a released pass: flight, stats and the pass log. */
@@ -181,6 +332,8 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer, urgent = 
     && bestShort.score >= (longOpts[0]?.score ?? -1) - 0.05;
   const chosen = (useShort ? bestShort : undefined) ?? longOpts[0] ?? bestShort;
   if (!chosen) return null;
+  // The named delivery profile is chosen at the contact frame, where the keeper's
+  // actual pressure, distance and foot are known (see ./contacts, "gk_punt").
   return {
     action: e.ball.handsRestrictedTeam === gk.team
       ? chosen.short ? "pass_short" : "pass_long"
@@ -190,5 +343,4 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer, urgent = 
     short: chosen.short,
     reason: `GK ${e.ball.handsRestrictedTeam === gk.team ? "FEET " : ""}${chosen.short ? "SHORT" : "LONG"} → #${chosen.m.idx} ${chosen.m.role} · ${chosen.dist.toFixed(0)}m · lane ${chosen.lane.toFixed(2)} · space ${chosen.space.toFixed(1)}m · press ${pressure.toFixed(1)}m`,
   };
-
 }

@@ -149,6 +149,29 @@ function Settings({ engine, showFps, onShowFps }: { engine: () => MatchEngine | 
           <span className="flex justify-between text-zinc-400"><span>Time scale</span><span className="text-[#c8f31d]">{(e?.timeScale ?? 1).toFixed(2)}×</span></span>
           <input type="range" min={0.1} max={2} step={0.05} value={e?.timeScale ?? 1} disabled={!e} onChange={(ev) => { if (e) { e.timeScale = +ev.target.value; tick((x) => x + 1); } }} className="w-full accent-[#c8f31d]" />
         </label>
+        {/* Surface selects the restitution / friction / rolling coefficient set the ball
+            model reads: wet grass bounces lower and rolls shorter, artificial turf is
+            livelier, worn ground bounces unpredictably. Applies live, mid-match. */}
+        <label className="mt-2 block rounded border border-white/10 bg-white/[0.03] p-2 text-[10px] font-bold">
+          <span className="flex justify-between text-zinc-400"><span>Pitch surface</span><span className="text-[#c8f31d]">{(e?.ball.surface ?? CONFIG.ball.surface).toUpperCase()}</span></span>
+          <select
+            value={e?.ball.surface ?? CONFIG.ball.surface}
+            onChange={(ev) => {
+              const surface = ev.target.value as "dry" | "wet" | "artificial" | "divot";
+              // CONFIG is declared read-only; the settings panel is the one intentional
+              // writer (same pattern as the CONFIG.ai sliders above).
+              (CONFIG.ball as unknown as { surface: typeof surface }).surface = surface;
+              if (e) e.ball.surface = surface;
+              tick((x) => x + 1);
+            }}
+            className="mt-1 w-full rounded bg-black/40 p-1 font-mono text-[10px] text-white"
+          >
+            <option value="dry">Dry natural grass</option>
+            <option value="wet">Wet, soft grass</option>
+            <option value="artificial">Artificial turf</option>
+            <option value="divot">Worn / divoted ground</option>
+          </select>
+        </label>
         {!e && <p className="mt-1 text-[10px] text-zinc-500">In-match toggles apply once a match is running.</p>}
       </div>
     </div>

@@ -12,14 +12,23 @@ import type { MatchHost } from "./host";
  * A player serving a blue card is off the pitch: idle, unable to enter play.
  * It is a timestamp, not a timer, so it survives restarts, substitutions of
  * state and the frozen clock of a restart setup.
+ *
+ * `0` is the "no card" sentinel and MUST be tested explicitly. The old form
+ * (`blueCardUntil > clock`) treated every player as carded whenever the match
+ * clock was momentarily zero or negative — which is exactly what the first
+ * rendered frame of a browser match can be, because `requestAnimationFrame`'s
+ * timestamp may precede the `performance.now()` sampled when the match loop was
+ * armed. One such frame benched all ten players (they walked to the touchline,
+ * outside the pitch), left the kickoff without a taker and froze the restart
+ * with the ball on the centre spot until a manual reset.
  */
 export function isOffPitch(e: MatchHost, p: EnginePlayer): boolean {
-  return p.blueCardUntil > e.clock;
+  return p.blueCardUntil > 0 && p.blueCardUntil > e.clock;
 }
 
 /** Seconds a blue-carded player still has to serve (0 when he may play). */
 export function blueCardRemaining(e: MatchHost, p: EnginePlayer): number {
-  return Math.max(0, p.blueCardUntil - e.clock);
+  return p.blueCardUntil > 0 ? Math.max(0, p.blueCardUntil - e.clock) : 0;
 }
 
 /** Where a sent-off player waits: outside the touchline on his own goal side. */

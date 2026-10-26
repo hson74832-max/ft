@@ -112,6 +112,9 @@ export interface MatchHost {
   restartWaitReason: string;
   warnedRestartId: number;
   restartContactT: number;
+  /** Pending-restart stall watchdog (id + seconds, owned by ./restarts). */
+  restartStallId: number;
+  restartStallT: number;
 
   // --- public commands the modules invoke -----------------------------------
   switchToNearest(manual?: boolean): void;
