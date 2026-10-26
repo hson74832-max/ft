@@ -5,7 +5,7 @@ import { CONFIG } from "../config";
 import { applyPose } from "../skeleton";
 import { WorldSnap } from "../ai";
 import { turnTowards, yawDelta, yawOfVector } from "../angles";
-import { _v1, _v2 } from "./scratch";
+import { _v1, _v2, _v3 } from "./scratch";
 import { isKickAction, startAction } from "./actions";
 import { aiControl, humanControl } from "./control";
 import { clampReleaseInsidePitch, onContact } from "./contacts";
@@ -148,16 +148,18 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     let desired = _v2.set(0, 0, 0);
     if (distT > 0.05) desired.copy(toTarget.normalize().multiplyScalar(Math.min(p.desiredSpeed, distT * 2.2 + 0.3)));
     // Soft separation prevents teammate collisions while preserving carrier/tackle access.
-    const separation = new THREE.Vector3();
+    _v3.set(0, 0, 0);
     for (const other of e.players) {
       if (other.idx === p.idx) continue;
-      const away = p.pos.clone().sub(other.pos).setY(0);
-      const distance = away.length();
+      // Reuse _v1 scratch for the away vector to avoid per-pair allocations
+      // (10 players × 9 others × 60 fps = 5400 vectors/s that previously hit GC).
+      _v1.copy(p.pos).sub(other.pos).setY(0);
+      const distance = _v1.length();
       if (distance <= 0.01 || distance >= 1.25) continue;
-      away.multiplyScalar((1.25 - distance) * (p.team === other.team ? 3.2 : 1.1) / distance);
-      separation.add(away);
+      _v1.multiplyScalar((1.25 - distance) * (p.team === other.team ? 3.2 : 1.1) / distance);
+      _v3.add(_v1);
     }
-    desired.add(separation);
+    desired.add(_v3);
     const rootAction = p.anim.actionRootMotion;
     if (rootAction) p.vel.multiplyScalar(Math.max(0, 1 - dt * 12));
     else if (p.pendingKick && isKickAction(p.pendingKick.action)) {
@@ -298,6 +300,12 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       p.pos.x += Math.cos(fw) * au.rootDelta.dx + Math.sin(fw) * au.rootDelta.dz;
       p.pos.z += -Math.sin(fw) * au.rootDelta.dx + Math.cos(fw) * au.rootDelta.dz;
       p.facing += au.rootDelta.dYaw;
+      // Root motion is authored in facing space and can push a sliding tackle
+      // or GK dive through the pitch wall. The main wall clamp ran before
+      // animation, so re-apply it here — otherwise a slide near the touchline
+      // clips visibly outside the wall for one frame.
+      p.pos.x = THREE.MathUtils.clamp(p.pos.x, -HX - margin, HX + margin);
+      p.pos.z = THREE.MathUtils.clamp(p.pos.z, -HZ - margin, HZ + margin);
     }
     // contact event → ball truth
     if (au.contact) onContact(e, p, au.contact);

@@ -710,6 +710,14 @@ export class Ball {
   glueTo(ownerPos: THREE.Vector3, facing: number, ownerVel: THREE.Vector3) {
     const fx = Math.cos(facing), fz = -Math.sin(facing);
     this.pos.set(ownerPos.x + fx * 0.48, CONFIG.ball.radius, ownerPos.z + fz * 0.48);
+    // A carrier hugging the touchline would otherwise put the glued ball's
+    // centre beyond the out-of-play line (carrier clamp is 0.4 m inside the
+    // wall, glue is 0.48 m ahead). Keep the ball itself inside the field so a
+    // dribble along the line does not award a spurious throw-in.
+    const hx = CONFIG.pitch.length / 2 - CONFIG.ball.radius - 0.02;
+    const hz = CONFIG.pitch.width / 2 - CONFIG.ball.radius - 0.02;
+    this.pos.x = THREE.MathUtils.clamp(this.pos.x, -hx, hx);
+    this.pos.z = THREE.MathUtils.clamp(this.pos.z, -hz, hz);
     this.vel.copy(ownerVel);
   }
 
