@@ -41,7 +41,12 @@ export function resolvePlayerCollisions(e: MatchHost) {
       // A restart taker may lawfully stand in the buffer outside the touchline
       // (throw-in) or behind the corner flag (corner): never clamp them back
       // onto the pitch here — stepPlayers already gave them the buffer margin.
-      const margin = (p: EnginePlayer) => (p.restartTaker || isOffPitch(e, p) ? CONFIG.pitch.buffer + 0.4 : 0);
+      // The defending keeper of a staged penalty stands on the goal line (Law 14),
+      // outside the normal in-play clamp; collision resolution must not shove him back.
+      const penaltyKeeper = (p: EnginePlayer) => e.rules.pendingRestart?.kind === "penalty"
+        && p.role === "GK" && p.team !== e.rules.pendingRestart.team;
+      const margin = (p: EnginePlayer) => (p.restartTaker || isOffPitch(e, p) || penaltyKeeper(p)
+        ? CONFIG.pitch.buffer + 0.4 : 0);
       a.pos.x = THREE.MathUtils.clamp(a.pos.x, -halfX - margin(a), halfX + margin(a));
       a.pos.z = THREE.MathUtils.clamp(a.pos.z, -halfZ - margin(a), halfZ + margin(a));
       b.pos.x = THREE.MathUtils.clamp(b.pos.x, -halfX - margin(b), halfX + margin(b));

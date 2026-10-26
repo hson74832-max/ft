@@ -8,7 +8,7 @@ import { turnTowards, yawDelta, yawOfVector } from "../angles";
 import { _v1, _v2 } from "./scratch";
 import { isKickAction, startAction } from "./actions";
 import { aiControl, humanControl } from "./control";
-import { onContact } from "./contacts";
+import { clampReleaseInsidePitch, onContact } from "./contacts";
 import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
 import { restartAuto, restartStallCheck } from "./restarts";
@@ -204,7 +204,11 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     // walls clamp — restart takers may legally stand outside the field of play
     // (corner taker behind the flag), so give them the buffer area.
     const HX = CONFIG.pitch.length / 2 - 0.4, HZ = CONFIG.pitch.width / 2 - 0.4;
-    const margin = p.restartTaker || benched ? CONFIG.pitch.buffer + 0.4 : 0;
+    // A penalty keeper must stand ON his goal line (Law 14); the in-play clamp is
+    // half a metre inside it, so he gets the buffer margin while the kick is staged.
+    const penaltyKeeper = e.rules.pendingRestart?.kind === "penalty"
+      && p.role === "GK" && p.team !== e.rules.pendingRestart.team;
+    const margin = p.restartTaker || benched || penaltyKeeper ? CONFIG.pitch.buffer + 0.4 : 0;
     p.pos.x = THREE.MathUtils.clamp(p.pos.x, -HX - margin, HX + margin);
     p.pos.z = THREE.MathUtils.clamp(p.pos.z, -HZ - margin, HZ + margin);
     p.speed = p.vel.length();
@@ -318,7 +322,12 @@ export function stepBall(e: MatchHost, dt: number, live: boolean) {
     const taker = e.players.find((p) => p.restartTaker);
     if (heldRestart.kind === "throw_in" && taker) {
       const forwardX = Math.cos(taker.facing), forwardZ = -Math.sin(taker.facing);
+      // The ball is held above the line by a thrower standing outside it, but it is
+      // pinned at the release point the contact frame will use — inside the pitch.
+      // (A ball held beyond the touchline would be out of play the instant it was
+      // thrown; see `clampReleaseInsidePitch`.)
       e.ball.pos.set(taker.pos.x + forwardX * 0.12, 1.65, taker.pos.z + forwardZ * 0.12);
+      clampReleaseInsidePitch(e.ball.pos);
     } else {
       e.ball.pos.set(heldRestart.pos[0], CONFIG.ball.radius, heldRestart.pos[1]);
     }

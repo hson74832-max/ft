@@ -156,6 +156,7 @@ export const CONFIG = {
     gkRushBonus: 1.3,          // extra advance against a close, central threat
     gkNearPostBias: 0.28,      // m — protect the near post on wide balls
     gkNearPostInset: 0.18,     // m — do not stand outside the post
+    minGroundPassClearance: 1.15, // m — a ground lane closer than this to a defender is not played
     passAimConeDegrees: 8,
     // === PERCEPTION (vision / memory / scanning) ===
     // The field of view is a cone around the body. Wide-angle vision is roughly
@@ -192,6 +193,16 @@ export const CONFIG = {
     slideControlPenalty: 0.1,  // slides have more reach but a narrower clean window
     spillSpeed: 5.5, spillDistance: 1.0,
     missStumble: 0.32, foulStumble: 0.8,
+    /**
+     * Risk is style.risk × aggression × discipline, and that product sits at
+     * 0.65–0.91 across the generated roster. The challenge gates are absolute
+     * (1.02 for a presser, 1.12 for the closest defender), so every one of those
+     * gates was unreachable and no player ever slid in: an entire tackle type and
+     * its recovery/foul path were dead code. Scaling the product moves the roster
+     * across the thresholds (≈0.88–1.23) while keeping the ordering and the
+     * booked-player multiplier intact.
+     */
+    riskScale: 1.35,
   },
   /**
    * Referee: foul grading (cards), the advantage law and the card-led behaviour
