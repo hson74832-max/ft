@@ -2,6 +2,7 @@
 // and the flag that turns an offside involvement into a free kick.
 import { CONFIG } from "../config";
 import type { EnginePlayer } from "./types";
+import { isOffPitch } from "./referee";
 import type { MatchHost } from "./host";
 
 /** Throw-ins, corners, goal kicks and kickoffs can never be offside. */
@@ -16,7 +17,8 @@ export function receiverOffsideAtKick(e: MatchHost, passer: EnginePlayer, receiv
   const attack = e.ai.attackSign(passer.team, e.rules.half);
   const u = receiver.pos.x * attack;
   if (u <= 0) return false;
-  const defenders = e.players.filter((p) => p.team !== passer.team)
+  // A blue-carded player is off the pitch and cannot hold an offside line.
+  const defenders = e.players.filter((p) => p.team !== passer.team && !isOffPitch(e, p))
     .map((p) => p.pos.x * attack).sort((a, b) => b - a);
   // With fewer than two opponents there is no second-last defender to judge
   // against, so no offside position can exist (default beyond the pitch).
@@ -34,11 +36,12 @@ export function captureOffsideAtKick(e: MatchHost, passer: EnginePlayer, restart
   const attack = e.ai.attackSign(passer.team, e.rules.half);
   // With fewer than two opponents there is no second-last defender, so no
   // offside position can exist (default beyond the pitch).
-  const secondLast = e.players.filter((p) => p.team !== passer.team)
+  const secondLast = e.players.filter((p) => p.team !== passer.team && !isOffPitch(e, p))
     .map((p) => p.pos.x * attack).sort((a, b) => b - a)[1] ?? CONFIG.pitch.length / 2;
   const ballU = e.ball.pos.x * attack;
   for (const player of e.players) {
     if (player.team !== passer.team || player.idx === passer.idx || player.role === "GK") continue;
+    if (isOffPitch(e, player)) continue;
     const u = player.pos.x * attack;
     if (u > 0 && u > ballU + CONFIG.ai.offsideBuffer && u > secondLast + CONFIG.ai.offsideBuffer) {
       e.offsideCandidates.add(player.idx);

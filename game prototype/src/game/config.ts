@@ -118,6 +118,11 @@ export const CONFIG = {
     gkCatchSpeed: 16,          // m/s — above this a clean contact becomes a parry
     gkSetShuffleSpeed: 2.0,    // m/s — lateral side-step while set for a shot
     gkOffBalancePenalty: 0.3,  // m of dive reach lost per m/s of lateral speed at contact
+    // A keeper may not sit on the ball. Once the distribution clock runs out he
+    // releases it himself — a long ball away — whatever the distribution choice was.
+    gkHoldLimit: 8,            // s — hard cap from gathering the ball to releasing it
+    gkPressureImminent: 0.2,   // s — a body this close to arriving outranks "nearest"
+    kickTurnLimit: 0.9,        // s — longest pivot onto a kick target before striking anyway
     // Aggressive hands at a dribbler's feet. A carrier who brings the ball inside
     // this range in the keeper's own box can be smothered (hands) rather than
     // tackled: the keeper commits the body, not a foot.
@@ -169,6 +174,34 @@ export const CONFIG = {
     slideControlPenalty: 0.1,  // slides have more reach but a narrower clean window
     spillSpeed: 5.5, spillDistance: 1.0,
     missStumble: 0.32, foulStumble: 0.8,
+  },
+  /**
+   * Referee: foul grading (cards), the advantage law and the card-led behaviour
+   * changes. Values are laws/rules of the game, not tuning knobs.
+   */
+  referee: {
+    // A challenge that is late or from the blind side is "reckless" when the
+    // challenger still had a competitive chance of playing the ball — i.e. the
+    // ball was inside this multiple of the tackle reach at the contact frame.
+    recklessReachFactor: 1.35,
+    yellowCardsPerBlue: 2,     // two yellows ⇒ blue card
+    blueCardSeconds: 60,       // s the player must stay off the pitch
+    // Advantage: play on when the fouled side keeps a usable ball. The carrier
+    // (or a teammate on a loose ball) must have this much room, or be moving
+    // forward into a clear corridor, otherwise the whistle stops play.
+    advantageClearance: 2.0,   // m — nearest opponent around the carrier
+    advantageCorridor: 2.0,    // m — opponent clearance at the forward aim point
+    advantageCorridorLength: 6.0, // m ahead of the carrier to test
+    advantageMinSpeed: 2.0,    // m/s — the carrier must still be running to play on
+    // A booked player stays on his feet: his challenge appetite is scaled by this
+    // and he no longer lunges from the blind side.
+    bookedCaution: 0.7,
+    bookedMinFrontDot: 0.15,
+    // A challenge is "blind side" for the referee when it was *committed* from
+    // behind the carrier's shoulder line (dot < -0.2 is beyond ~78° off his front).
+    // Measured at the wind-up, not at contact: carriers turn constantly, and grading
+    // the contact geometry instead booked essentially every foul in the match.
+    recklessBlindsideDot: -0.2,
   },
   tactics: {
     planInterval: 0.4,
@@ -425,6 +458,7 @@ export const FORMATIONS: Record<string, { role: string; home: [number, number] }
 export type RuleEventType =
   | "KICKOFF" | "WHISTLE" | "GOAL" | "THROW_IN" | "CORNER" | "GOAL_KICK"
   | "FREE_KICK" | "PENALTY" | "FOUL" | "TACKLE" | "POSSESSION" | "SAVE" | "HALF_TIME"
-  | "FULL_TIME" | "CELEBRATION_END" | "RESTART_READY" | "OFFSIDE";
+  | "FULL_TIME" | "CELEBRATION_END" | "RESTART_READY" | "OFFSIDE"
+  | "YELLOW_CARD" | "BLUE_CARD" | "ADVANTAGE";
 
 export interface RuleEvent { id: number; t: number; type: RuleEventType; detail: string; team?: number; }

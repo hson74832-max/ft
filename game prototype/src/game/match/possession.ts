@@ -8,6 +8,7 @@ import { flagOffside } from "./offside";
 import { setHumanPlayer, switchToNearest } from "./roster";
 import { startAction } from "./actions";
 import { resetTackleState } from "./tackles";
+import { isOffPitch } from "./referee";
 import { tieBreakHash } from "../random";
 import type { MatchHost } from "./host";
 
@@ -44,7 +45,7 @@ export function possessionCheck(e: MatchHost) {
     // smothers the ball with his gloves. Without this the carrier's body simply
     // owned the ball inside the six-yard area and the keeper could never take it.
     if (o.role !== "GK") {
-      const gk = e.players.find((q) => q.role === "GK" && q.team !== o.team);
+      const gk = e.players.find((q) => q.role === "GK" && q.team !== o.team && !isOffPitch(e, q));
       if (gk) {
         const ownGoal = e.ai.ownGoal(gk.team, e.rules.half);
         const inOwnBox = Math.abs(gk.pos.x - ownGoal.x) < 5.8 && Math.abs(gk.pos.z) < 6.2;
@@ -85,6 +86,7 @@ export function possessionCheck(e: MatchHost) {
 
   // Free ball reception / trapping: check all active players
   for (const p of e.players) {
+    if (isOffPitch(e, p)) continue; // blue card: not on the pitch, cannot receive
     if (p.stumbleT > 0) continue; // recovering from tackle, cannot trap
     // The striker cannot instantly re-trap their own kick: at release the ball is still
     // inside their control radius, which previously turned every pass into a self-retrap.
@@ -188,19 +190,25 @@ export function outGoalCheck(e: MatchHost) {
     const attacker = e.ai.attackSign(0, e.rules.half) === side ? 0 : 1;
     const defender = 1 - attacker;
     const lastT = touchTeam ?? attacker; // unknown goal-line touch: safest is a goal kick
+    let spot: [number, number];
     if (lastT === attacker) {
       const gx = side * (L - 2.0);
+      spot = [gx, 0];
       e.outRestartCount++;
-      e.rules.startSetup("goal_kick", [gx, 0], defender);
+      e.rules.startSetup("goal_kick", spot, defender);
     } else {
       const cx = side * (L - 0.25);
       // Corner flag on the side where the ball actually crossed the line,
       // which at shot pace can differ from where it ends the frame.
       const cz = (goalLineCrossZ >= 0 ? 1 : -1) * (Wd - 0.25);
+      spot = [cx, cz];
       e.outRestartCount++;
-      e.rules.startSetup("corner", [cx, cz], attacker);
+      e.rules.startSetup("corner", spot, attacker);
     }
     e.ball.release(); e.ball.vel.set(0, 0, 0);
+    // The whistle is instant: the ball is put back at the restart spot on the same
+    // frame it crossed, so it never spends a frame physically outside the pitch.
+    e.ball.pos.set(spot[0], CONFIG.ball.radius, spot[1]);
     e.offsideCandidates.clear(); e.offsideTeam = null;
     return;
   }
@@ -223,6 +231,7 @@ export function outGoalCheck(e: MatchHost) {
     e.outRestartCount++;
     e.rules.startSetup("throw_in", [cx, cz], team);
     e.ball.release(); e.ball.vel.set(0, 0, 0);
+    e.ball.pos.set(cx, CONFIG.ball.radius, cz);
     e.offsideCandidates.clear(); e.offsideTeam = null;
   }
 }

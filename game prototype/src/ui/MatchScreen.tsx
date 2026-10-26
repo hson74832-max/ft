@@ -75,6 +75,20 @@ export function MatchScreen({ canvasRef, snap, paused, debugOpen, showFps, onDeb
           </div>
         </div>
       )}
+      {/* Disciplinary state: who is booked and who is serving a blue card. */}
+      {snap && snap.cards.length > 0 && (
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 gap-1.5">
+          {snap.cards.map((c) => (
+            <div key={c.idx} className="flex items-center gap-1 rounded border border-white/10 bg-black/70 px-1.5 py-0.5 font-mono text-[9px] font-bold backdrop-blur">
+              <span className="h-3 w-2 rounded-[1px] bg-[#f2d21a]" title={`${c.yellow} yellow`} />
+              {c.blueRemaining > 0 && <span className="h-3 w-2 rounded-[1px] bg-[#2ea8ff]" />}
+              <span className={c.team === 0 ? "text-[#ff8b6b]" : "text-[#9fd4ff]"}>{c.team === 0 ? "HBC" : "RWR"}</span>
+              <span className="text-zinc-300">#{c.idx} {c.role}</span>
+              {c.blueRemaining > 0 && <span className="text-[#2ea8ff]">{Math.ceil(c.blueRemaining)}s</span>}
+            </div>
+          ))}
+        </div>
+      )}
       {snap?.phase === "HALFTIME" && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/55">
           <div className="text-center">

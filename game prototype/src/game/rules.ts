@@ -15,24 +15,42 @@ export class RulesEngine {
   private eid = 1;
   private rid = 1;
   private halfNotified = false;
+  /**
+   * One-shot latch for the *opening* kickoff announcement.
+   *
+   * The opening kickoff is announced once, by the first `startSetup("kickoff")`;
+   * the latch records that it has been announced so a re-stage can never repeat
+   * it, and every later kickoff (second half, after a goal) announces normally.
+   *
+   * This deliberately does NOT test the match clock. An earlier `time < 0.1`
+   * guard could only ever be true for the opening kickoff: the match clock is
+   * frozen while players are staged for a restart, so by the time the second
+   * half or a post-goal kickoff is set up the clock is minutes past that
+   * window. The condition was impossible to satisfy, so those kickoffs never
+   * emitted a KICKOFF event and the HUD feed reported no kickoff at all.
+   */
+  private openingKickoffAnnounced = false;
+  private kickoffCount = 0;
   readonly initialKickoffTeam: number;
 
   constructor(initialKickoffTeam = 0) {
     this.initialKickoffTeam = initialKickoffTeam;
-    this.emit("KICKOFF", `Match initialised — kickoff ${initialKickoffTeam === 0 ? "RED" : "BLUE"}`, initialKickoffTeam);
   }
 
   get halfLength() { return CONFIG.match.totalSeconds / 2; }
   get remaining() { return Math.max(0, CONFIG.match.totalSeconds - this.time); }
+  /** Remaining match clock, zero-padded (00:45, not 0:45). */
   get clock(): string {
     const r = this.remaining;
     const m = Math.floor(r / 60), s = Math.floor(r % 60);
-    return `${m}:${String(s).padStart(2, "0")}`;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
   get elapsedClock(): string {
     const t = Math.max(0, Math.floor(this.time));
     return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
   }
+  /** How many kickoffs have been announced this match (the opening one included). */
+  get kickoffs() { return this.kickoffCount; }
   get halfLabel(): string {
     if (this.phase === "FULLTIME") return "FULL TIME";
     if (this.phase === "HALFTIME") return "HALF TIME";
@@ -44,15 +62,30 @@ export class RulesEngine {
     if (this.events.length > 120) this.events.shift();
   }
 
+  /** Announce a kickoff exactly once, whoever stages it and whenever it happens. */
+  private announceKickoff(team: number, pos: [number, number]) {
+    const name = team === 0 ? "RED" : "BLUE";
+    const detail = this.openingKickoffAnnounced
+      ? `kickoff → team ${name} @ (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`
+      : `Match initialised — kickoff ${name}`;
+    this.openingKickoffAnnounced = true;
+    this.kickoffCount++;
+    this.emit("KICKOFF", detail, team);
+  }
+
   startSetup(kind: string, pos: [number, number], team: number) {
     this.phase = "SETUP";
     this.setupT = CONFIG.match.setupFreeze;
     this.pendingRestart = { id: this.rid++, kind, pos, team };
+    if (kind === "kickoff") {
+      this.announceKickoff(team, pos);
+      return;
+    }
     const map: Record<string, RuleEventType> = {
       throw_in: "THROW_IN", corner: "CORNER", goal_kick: "GOAL_KICK",
-      free_kick: "FREE_KICK", penalty: "PENALTY", kickoff: "KICKOFF",
+      free_kick: "FREE_KICK", penalty: "PENALTY",
     };
-    this.emit(map[kind] ?? "KICKOFF", `${kind.replace("_", " ")} → team ${team === 0 ? "RED" : "BLUE"} @ (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`, team);
+    this.emit(map[kind] ?? "WHISTLE", `${kind.replace("_", " ")} → team ${team === 0 ? "RED" : "BLUE"} @ (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`, team);
   }
 
   lastScorer: number = 0;

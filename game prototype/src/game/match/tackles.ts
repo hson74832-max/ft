@@ -27,6 +27,14 @@ export interface TackleQuality {
   facingDot: number;
   frontDot: number;
   lateRatio: number;
+  /** Contact arrived after the ideal contact time, or the target had changed. */
+  late: boolean;
+  /** Arrived from behind / the blind side of the carrier (contact geometry). */
+  blindside: boolean;
+  /** The wind-up itself was from behind the carrier — what a card is judged on. */
+  blindsideCommitted: boolean;
+  /** The ball was still inside a competitive distance of the challenge. */
+  competitive: boolean;
   staleTarget: boolean;
   protectedCarrier: boolean;
   mistimed: boolean;
@@ -60,6 +68,18 @@ export function tackleCooldown(action: TackleAction): number {
 /** +X at yaw 0, +Z is right — the same convention as `yawOfVector`. */
 export function forwardOf(facing: number): { x: number; z: number } {
   return { x: Math.cos(facing), z: -Math.sin(facing) };
+}
+
+/**
+ * `frontDot` between a carrier and a challenger position: >0 the challenger is in
+ * front of the carrier (can see the ball), <0 he arrived from behind the body.
+ * The challenger's committed angle is frozen with the wind-up so a carrier who
+ * spins into a fair challenge does not retroactively make that challenge blind-side.
+ */
+function frontDotOf(carrier: { pos: { x: number; z: number }; facing: number }, from: { x: number; z: number }): number {
+  const fromCarrier = normalTo(carrier.pos, from);
+  const carrierForward = forwardOf(carrier.facing);
+  return carrierForward.x * fromCarrier.x + carrierForward.z * fromCarrier.z;
 }
 
 function groundDistance(a: { x: number; z: number }, b: { x: number; z: number }): number {
@@ -113,6 +133,7 @@ export function beginTackle(e: MatchHost, p: EnginePlayer, action: TackleAction)
     idealContact: meta.duration * (meta.contactFrame ?? 0.5),
     startBallDist: groundDistance(p.pos, e.ball.pos),
     startCarrierDist: carrier ? groundDistance(p.pos, carrier.pos) : Infinity,
+    startFrontDot: carrier ? frontDotOf(carrier, p.pos) : 0,
   };
   p.tackleChallenge = challenge;
   // Recovery starts with the ATTEMPT, not at the contact frame. A whiff cannot
@@ -137,11 +158,10 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   const toBall = normalTo(p.pos, e.ball.pos);
   const forward = forwardOf(p.facing);
   const facingDot = forward.x * toBall.x + forward.z * toBall.z;
-  const fromCarrier = carrier ? normalTo(carrier.pos, p.pos) : { x: 0, z: 0 };
-  const carrierForward = carrier ? forwardOf(carrier.facing) : { x: 0, z: 0 };
   // >0: challenger is in front of the carrier and can see the ball.
-  // <0: challenger arrived from the blind side / behind the shielding body.
-  const frontDot = carrier ? carrierForward.x * fromCarrier.x + carrierForward.z * fromCarrier.z : 0;
+  // <0: challenger arrived from the blind side / behind the shielding body. This
+  // is the geometry at the contact frame, which decides the *outcome*.
+  const frontDot = carrier ? frontDotOf(carrier, p.pos) : 0;
 
   const meta = getClip(action);
   const idealContact = challenge?.idealContact ?? meta.duration * (meta.contactFrame ?? 0.5);
@@ -183,7 +203,15 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
     && !staleTarget && !protectedCarrier && carrier !== null;
   const heavyContact = hostile && carrierDist <= bodyReach;
   const blindside = frontDot < -0.35;
+  // What the challenger chose, as opposed to what the contact frame looked like:
+  // a carrier who turns into a challenge committed to from the front is not a
+  // blind-side challenge. The referee grades cards on this flag, not on `blindside`.
+  const blindsideCommitted = (challenge ? challenge.startFrontDot : frontDot) < CONFIG.referee.recklessBlindsideDot;
   const late = staleTarget || lateRatio > 0.45;
+  // The referee's card grading reads these two flags: a late or blind-side
+  // challenge is only *reckless* (yellow) when the ball was still there to be
+  // played — a challenge that never got near the ball is a plain foul.
+  const competitive = hostile && ballDist <= reach * CONFIG.referee.recklessReachFactor;
   // Contact timing. The contact frame always fires at the clip's own contact frame, so
   // a challenge is mistimed when that frame lands with the body on the carrier but the
   // ball outside reach — the defender hit the man, not the ball. A small tolerance over
@@ -198,10 +226,11 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   const reason = `q=${score.toFixed(2)} ${action} · ball ${ballDist.toFixed(2)}m/${reach.toFixed(2)}m`
     + ` · face ${facingDot.toFixed(2)} · front ${frontDot.toFixed(2)}`
     + ` · t ${elapsed.toFixed(2)}/${idealContact.toFixed(2)}${staleTarget ? " · stale" : ""}`
+    + ` · commit ${(challenge ? challenge.startFrontDot : frontDot).toFixed(2)} · lateR ${lateRatio.toFixed(2)}`
     + `${protectedCarrier ? " · protected" : ""}${mistimed ? " · mistimed contact" : ""}`;
 
   return {
-    score, outcome, ballFirst, heavyContact, facingDot, frontDot, lateRatio,
+    score, outcome, ballFirst, heavyContact, facingDot, frontDot, lateRatio, late, blindside, blindsideCommitted, competitive,
     staleTarget, protectedCarrier, mistimed, ballDist, carrierDist, elapsed, idealContact, reason,
   };
 }

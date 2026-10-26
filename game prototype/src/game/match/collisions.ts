@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { CONFIG } from "../config";
 import { aiEvent } from "./debug";
+import { isOffPitch } from "./referee";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -11,6 +12,8 @@ export function resolvePlayerCollisions(e: MatchHost) {
   for (let i = 0; i < e.players.length; i++) {
     for (let j = i + 1; j < e.players.length; j++) {
       const a = e.players[i], b = e.players[j];
+      // A blue-carded player stands outside the touchline: he is not a body in play.
+      if (isOffPitch(e, a) || isOffPitch(e, b)) continue;
       const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
       const distance = Math.hypot(dx, dz);
       const minimum = bodyRadius(a) + bodyRadius(b);
@@ -38,7 +41,7 @@ export function resolvePlayerCollisions(e: MatchHost) {
       // A restart taker may lawfully stand in the buffer outside the touchline
       // (throw-in) or behind the corner flag (corner): never clamp them back
       // onto the pitch here — stepPlayers already gave them the buffer margin.
-      const margin = (p: EnginePlayer) => (p.restartTaker ? CONFIG.pitch.buffer + 0.4 : 0);
+      const margin = (p: EnginePlayer) => (p.restartTaker || isOffPitch(e, p) ? CONFIG.pitch.buffer + 0.4 : 0);
       a.pos.x = THREE.MathUtils.clamp(a.pos.x, -halfX - margin(a), halfX + margin(a));
       a.pos.z = THREE.MathUtils.clamp(a.pos.z, -halfZ - margin(a), halfZ + margin(a));
       b.pos.x = THREE.MathUtils.clamp(b.pos.x, -halfX - margin(b), halfX + margin(b));
@@ -56,6 +59,7 @@ export function resolveBallPlayerCollisions(e: MatchHost) {
   // Find the closest overlapping player rather than the first in array order.
   let hit: EnginePlayer | null = null, hitDist = Infinity, hitNx = 0, hitNz = 0;
   for (const p of e.players) {
+    if (isOffPitch(e, p)) continue; // off the pitch on a blue card: no ball contact
     const dx = e.ball.pos.x - p.pos.x, dz = e.ball.pos.z - p.pos.z;
     const distance = Math.hypot(dx, dz);
     // The striker's own fresh kick starts inside their body radius — never deflect it.

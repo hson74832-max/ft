@@ -140,6 +140,8 @@ export interface WorldPlayer {
   /** Duel state from the engine player (optional for standalone AI fixtures). */
   tackleRecoveryT?: number;
   tackleProtectionT?: number;
+  /** Booking state: a cautioned player has to stay on his feet (see canTackle). */
+  yellowCards?: number;
   /** Field of view + short-term memory (absent for standalone AI fixtures). */
   perception?: Perception;
 }
@@ -571,9 +573,14 @@ export class AIController {
     // Team AI: the side's pressing mentality scales how hard the whole unit
     // steps out and hunts the carrier, on top of each player's own style.
     const teamPressing = this.tactics.teamStyle(p.team, snap.matchSeed).pressing;
+    // Card awareness: a booked player has to stay on his feet. He still presses,
+    // but he is much less willing to commit to a challenge and risk the second
+    // yellow that would take him off the pitch for good.
+    const cautioned = (p.yellowCards ?? 0) > 0;
     const tackleRisk = p.style.risk * (0.5 + (p.attributes?.physical.aggression ?? 75) / 150)
       // Discipline: a reckless player dives in; a disciplined one stays on his feet.
-      * (1.25 - (p.attributes?.mentality.discipline ?? 75) / 150);
+      * (1.25 - (p.attributes?.mentality.discipline ?? 75) / 150)
+      * (cautioned ? CONFIG.referee.bookedCaution : 1);
 
     // Back line steps out to close the central carrier AND the partner covers the shooting lane.
     if (p.role === "DEF" && centerThreat) {
@@ -1058,6 +1065,15 @@ export class AIController {
     const horizon = 0.65 + reactions / 100 * 0.55;
     let opponent: WorldPlayer | null = null;
     let distance = Infinity, closing = 0, arrival = Infinity;
+    // Two separate questions, which the old single pass conflated:
+    //   * urgency — can ANYBODY be on the keeper soon? (distance OR closing time)
+    //   * which body — the one he has to step off. That is the NEAREST opponent,
+    //     unless a further one is arriving inside his reaction window, in which
+    //     case that imminent challenger owns the decision.
+    // Ranking by closing time alone let a distant sprinter outrank a nearer,
+    // slower opponent on a technicality, because the nearer body was filed as
+    // "not urgent" and skipped outright.
+    let anyUrgent = false;
     for (const q of snap.players) {
       if (q.team === p.team || q.role === "GK") continue;
       const d = d2(q.pos, p.pos);
@@ -1066,12 +1082,16 @@ export class AIController {
       const c = (q.vel.x - p.vel.x) * ux + (q.vel.z - p.vel.z) * uz;
       const t = c > 0.5 ? Math.max(0, d - CONFIG.player.controlRadius) / c : Infinity;
       const urgent = d < 1.55 || (d < CONFIG.ai.pressRadius && t < horizon);
-      const bestUrgent = arrival < horizon || distance < 1.55;
-      if (urgent === bestUrgent && t >= arrival && d >= distance) continue;
-      if (!urgent && bestUrgent) continue;
+      anyUrgent = anyUrgent || urgent;
+      if (!opponent) { opponent = q; distance = d; closing = c; arrival = t; continue; }
+      const incumbentImminent = arrival < CONFIG.ai.gkPressureImminent;
+      const candidateImminent = t < CONFIG.ai.gkPressureImminent;
+      if (candidateImminent !== incumbentImminent) {
+        if (!candidateImminent) continue;      // imminent challenger always wins
+      } else if (d > distance + 0.25) continue; // otherwise the nearer body wins
       opponent = q; distance = d; closing = c; arrival = t;
     }
-    return { opponent, distance, closing, arrival, urgent: !!opponent && (distance < 1.55 || arrival < horizon) };
+    return { opponent, distance, closing, arrival, urgent: !!opponent && anyUrgent };
   }
 
   private goalkeeperDecision(
@@ -1629,7 +1649,9 @@ export class AIController {
     // A challenge from behind is unrealistic and is a foul at contact. Only the slide
     // was gated here, so defenders kept committing standing challenges from the blind
     // side that could never be won cleanly and only ever gave away fouls.
-    return frontDot >= -0.35;
+    // A booked player is stricter with himself: no blind-side lunges at all.
+    const blindsideLimit = (p.yellowCards ?? 0) > 0 ? CONFIG.referee.bookedMinFrontDot : -0.35;
+    return frontDot >= blindsideLimit;
   }
 
   commitDecision(idx: number, decision: AIDecision) {
