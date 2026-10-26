@@ -71,7 +71,11 @@ Open the menu, then:
 
 - **Kickoff** at the centre spot with a chosen taker; all opponents are outside the centre circle in their own half; the first ball is played forward. Restarts wait if the exclusion zone is not clear.
 - **Goals** only register when the whole ball has crossed the goal line inside the posts, below the bar and inside the net volume. Goals cannot register while the match is out of play or in a foul/restart state.
-- **Restarts**: goal kicks are taken by the defending keeper from the goal area; corners by the closest eligible outfielder at the correct flag; throw-ins by the closest eligible outfielder at the exit point on the correct touchline. The ball is frozen at the restart spot until the animation contact event releases it. A contact-window watchdog releases the ball rather than looping a restart.
+- **Restarts**: goal kicks are taken by the defending keeper from the goal area; corners by the closest eligible outfielder at the correct flag; throw-ins by the closest eligible outfielder at the exit point on the correct touchline. The ball is frozen at the restart spot until the animation contact event releases it. A contact-window watchdog releases the ball rather than looping a restart. Every kickoff — opening, after a goal, and the second half — is announced exactly once (a one-shot latch, never a clock test: the clock is frozen while players stage a restart).
+- **Goalkeeper distribution clock**: a keeper may hold the ball for at most 8 s (`CONFIG.ai.gkHoldLimit`). When the limit expires the engine releases it for him: a long ball at the most advanced reachable teammate, aimed inside the field of play. If no delivery can be planned the keeper strikes it away himself — the limit is a rule, not an intention.
+- **Cards**: a foul is graded from the challenge data the duel model already produces. A *reckless* challenge (late or from the blind side) in which the challenger still had a competitive chance of playing the ball is a **yellow card**; two yellows are a **blue card**, which takes the player off the pitch and idle for 60 s before he re-enters. Cards are shown on the HUD above the scorebug and in the rule feed, and the AI reacts to them: a booked player scales his challenge appetite down and refuses blind-side lunges.
+- **Advantage**: the whistle stays down while the fouled side keeps a usable ball — the fouled player still on it with real space, or running forward into a clear corridor, or a teammate arriving on a loose ball. The foul is still recorded and still sanctioned; only the restart is waived.
+- **Ball boundaries**: a carried ball is glued 0.48 m in front of the carrier while players are clamped 0.4 m inside the touchlines and goal lines, so a dribbled ball cannot leave the pitch (the clamp inset is smaller than the ball radius, and the invariant is regression-tested). A kicked ball is judged on the swept segment from the previous frame position: the moment it crosses a line the restart is awarded, its velocity is zeroed and it is put back at the restart spot on that same frame. Restart takers may legally stand outside the pitch; the ball they release is clamped back inside. AI aim points (including keeper distribution and receiver prediction) are pre-clamped inside the pitch.
 - **Half time**: clock stops, ends swap, score is preserved, and the side that did not kick off first restarts the second half.
 - **Offside** is judged at the pass from open play and enforced on involvement (no offside from throw-ins, corners or goal kicks). AI support targets are clamped onside and offside runners are excluded from pass candidate scoring.
 - **Possession** changes only through an animation / ball event: loose-ball control, interception, tackle contact with the ball, or a keeper catch. The animated carrier is the credited owner.
@@ -144,6 +148,8 @@ src/game/
     restarts.ts     restart staging, taker selection, delivery sampling, watchdog
     contacts.ts     the contact frame: what the ball does when an action lands
     tackles.ts      deterministic challenge quality, recovery and possession protection
+    referee.ts      foul grading, yellow/blue cards and the 60 s exclusion, advantage
+    keeper.ts       the 8 s goalkeeper distribution limit (forced long clearance)
     possession.ts   possession clock, reception triggers, out-of-play detection
     collisions.ts   player/ball body collisions
     snapshot.ts     HUD DTO (`Snapshot`)
@@ -160,13 +166,14 @@ scripts/support-match.ts      complete seeded matches and exact trajectory repla
 scripts/attacking-runs.ts     regression suite for off-ball runs, progressive intent, transition
 scripts/duel-regression.ts    tackle quality/recovery, keeper angles, deterministic replay, HUD robustness
 scripts/motion-pipeline.ts    generator → pack → slot bindings → controller → live match checks
+scripts/referee-regression.ts kickoff announcements, clock format, cards, advantage, keeper limit, ball bounds
 ```
 
 ## AI instrumentation & deterministic reproduction
 
 **In the browser:** append `?debug=ai` to the URL. Each frame, before the player loop, every player gets a trace row. Once per second the console prints a table with `idx, team, role, hasBall, branch, thinkCalled, thinkFresh, decisionReason, actionReturned, startActionResult, animBusy, animUninterruptible, animActionId, moveTarget, desiredSpeed, speed, overwrittenBy`, plus explicit warnings such as `CARRIER STALL` or `move target overwritten by restartHold`. Discrete events (possession granted, kick released or cancelled, tackle/intercept won or missed, keeper catch/parry/miss with distances) are logged as they happen.
 
-`branch` names who controlled the player that frame: `ai`, `human`, `restartHold`, `frozen`, `gkHold`. `startActionResult` is `ok:<clip>`, `skipped:recovery(...)`, `skipped:locked(<clip>)` or `skipped:cached-decision`.
+`branch` names who controlled the player that frame: `ai`, `human`, `restartHold`, `frozen`, `gkHold`, `gkForceRelease`, `benched` (serving a blue card). `startActionResult` is `ok:<clip>`, `skipped:recovery(...)`, `skipped:locked(<clip>)`, `skipped:turning-to-face`, `skipped:clip-rejected` or `skipped:cached-decision` — the specific cause is kept, never replaced by a generic ok/rejected label.
 
 **Headless (Node), same engine, fixed seed:**
 
@@ -209,7 +216,7 @@ Covers kickoff/half-time/full-time flow, cross-seed determinism, FieldMotion par
 
 - **Tackles are deterministic duels, not binary possession swaps.** `match/tackles.ts` computes a bounded quality score from facing angle, approach side, ball/body distance, wind-up timing, carrier movement, stamina and pressing style. It never calls `Math.random()` or the match PRNG; the same state produces the same outcome.
 - A high-quality, ball-first challenge can win possession. A marginal challenge spills the ball into neutral space. A bad-angle, blind-side, protected-carrier or late challenge is a miss/foul and never grants free possession. The contact frame decides: a challenge that arrives with the body on the carrier but the ball outside the tackle's reach is **mistimed** and is a foul even though the ball was never won.
-- **Fouls are on by default** (**Settings → Fouls** still turns the whistle off, and a bad challenge is then punished with recovery and a stumble instead of a restart). A foul against the carrier is a free kick where he was fouled, and a penalty when that spot is inside the box he is attacking. A keeper holding the ball in his hands (`handsRestrictedTeam`) cannot be challenged at all — not at the wind-up, not at the contact frame.
+- **Fouls are on by default** (**Settings → Fouls** still turns the whistle off, and a bad challenge is then punished with recovery and a stumble instead of a restart; cards are still booked). A foul against the carrier is a free kick where he was fouled, and a penalty when that spot is inside the box he is attacking. A keeper holding the ball in his hands (`handsRestrictedTeam`) cannot be challenged at all — not at the wind-up, not at the contact frame.
 - Four-minute matches now produce ~4 fouls and ~4 free kicks per match (8 seeds), including the occasional penalty; before this change no whistle could ever be awarded because fouls were disabled and the box test used the wrong goal.
 - Recovery starts when the challenge starts, not at the contact frame. Standing and sliding challenges have separate reach, recovery and cooldown values in `CONFIG.tackle`; a slide has more reach but a narrower clean window and a longer `get_up` recovery. The winner receives `possessionProtection` seconds of shielding, which breaks immediate A-wins/B-wins/A-wins ping-pong.
 - **The keeper faces play, not his own goal line.** `stepPlayers` turned every player to face his velocity, so a keeper shuffling backwards or side-stepping along his line turned his back to the pitch. A keeper who is not carrying the ball now always faces the ball (feet can travel sideways under him); with the ball at his feet the normal rule applies. Measured over 8 matches the mean dot of keeper facing with the ball direction rose from 0.545 to 0.999, and the share of frames with his back to the ball (dot < -0.2) fell from 18.6% to 0%.

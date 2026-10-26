@@ -13,6 +13,7 @@ import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
 import { restartAuto } from "./restarts";
 import { decayTackleTimers } from "./tackles";
+import { benchSpot, blueCardRemaining, isOffPitch, updateBlueCards } from "./referee";
 import { scanHeadYaw, updatePerception } from "./perception";
 import type { MatchHost } from "./host";
 
@@ -22,7 +23,9 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
   const snap: WorldSnap = {
     ballPos: e.ball.pos.clone(), ballVel: e.ball.vel.clone(),
     ballOwner: ownerIdx, ballOwnerTeam: e.ball.ownerTeam,
-    players: e.players.map((p) => ({
+    // A blue-carded player is off the pitch: he is not a passing option, not a
+    // marker and not an opponent, so the AI picture leaves him out entirely.
+    players: e.players.filter((p) => !isOffPitch(e, p)).map((p) => ({
       idx: p.idx, team: p.team, role: p.role, roleIdx: p.roleIdx, pos: p.pos.clone(), vel: p.vel.clone(),
       facing: p.facing, speed: p.speed, busy: p.anim.busy,
       uninterruptible: p.anim.uninterruptible, actionId: p.anim.actionId, cooldowns: p.anim.cooldowns,
@@ -30,6 +33,7 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
       callForBall: p.callForBall, isHuman: p.isHuman, runSerial: p.runSerial, style: p.style, attributes: p.attributes,
       moveTarget: p.moveTarget.clone(), desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
       tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
+      yellowCards: p.yellowCards,
       perception: p.perception,
     })),
     time: e.clock, half: e.rules.half, matchSeed: e.matchSeed,
@@ -79,6 +83,9 @@ export function beginAITrace(e: MatchHost) {
 
 /** Control branch, motion integration, animation and rig transform for every player. */
 export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boolean, frozen: boolean) {
+  // Blue cards expire on the match clock, not on wall time: a restart freeze must
+  // not shorten the exclusion.
+  updateBlueCards(e);
   // What each player can see and still remembers, refreshed from the body
   // orientations the previous frame ended with: every decision below is made
   // against that picture, not against the engine's ground truth (./perception).
@@ -99,7 +106,17 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
       && e.restartLaunchedId !== e.rules.pendingRestart.id;
     const isHumanControlled = !e.spectator && p.idx === e.humanIdx && live && !restartHold;
     const tr = e.debugAI ? e.aiTrace.get(p.idx) : undefined;
-    if (restartHold) {
+    const benched = isOffPitch(e, p);
+    if (benched) {
+      // Blue card: idle off the pitch until the exclusion expires. No control
+      // branch, no challenge, no ball — he walks to his bench spot and stays there.
+      benchSpot(e, p, p.moveTarget);
+      p.desiredSpeed = CONFIG.player.runSpeed;
+      p.shielding = false; p.strideFacing = null; p.faceTarget = null;
+      p.pendingKick = null;
+      p.decisionReason = `Blue card · off the pitch (${Math.ceil(blueCardRemaining(e, p))}s)`;
+      if (tr) { tr.branch = "benched"; tr.overwrittenBy = "blueCard"; }
+    } else if (restartHold) {
       p.moveTarget.copy(p.pos); p.desiredSpeed = 0;
       p.decisionReason = "Restart setup · waiting for ball contact";
       if (tr) { tr.branch = "restartHold"; tr.overwrittenBy = `restartHold(${e.rules.pendingRestart?.kind})`; }
@@ -179,7 +196,7 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     // walls clamp — restart takers may legally stand outside the field of play
     // (corner taker behind the flag), so give them the buffer area.
     const HX = CONFIG.pitch.length / 2 - 0.4, HZ = CONFIG.pitch.width / 2 - 0.4;
-    const margin = p.restartTaker ? CONFIG.pitch.buffer + 0.4 : 0;
+    const margin = p.restartTaker || benched ? CONFIG.pitch.buffer + 0.4 : 0;
     p.pos.x = THREE.MathUtils.clamp(p.pos.x, -HX - margin, HX + margin);
     p.pos.z = THREE.MathUtils.clamp(p.pos.z, -HZ - margin, HZ + margin);
     p.speed = p.vel.length();

@@ -9,6 +9,7 @@ import { startAction } from "./actions";
 import { aiEvent } from "./debug";
 import { captureOffsideAtKick, flagOffside } from "./offside";
 import { planNamedPass, recordPass } from "./passPlanning";
+import { advantageAvailable, isOffPitch, issueCards } from "./referee";
 import { setHumanPlayer } from "./roster";
 import { releaseRestartToTaker } from "./restarts";
 import {
@@ -45,6 +46,9 @@ export function footWorld(p: EnginePlayer, which = "R"): THREE.Vector3 {
 
 /** Resolve an action's contact frame against the ball, then close the restart out. */
 export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
+  // A player serving a blue card is off the pitch: his clip may still be playing
+  // out, but its contact frame may not touch the ball, the restart or the duel state.
+  if (isOffPitch(e, p)) { p.pendingKick = null; p.tackleChallenge = null; return; }
   const pk = p.pendingKick;
   const activeRestart = e.rules.pendingRestart;
   let ballReleasedByAction = false;
@@ -75,6 +79,18 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
     case "pass_short": case "pass_long": case "pass_through": {
       if (pk?.action !== action) { p.pendingKick = null; break; }
       if (!ownerIsMe) break;
+      if (pk.forced) {
+        // Forced clearance from a keeper playing a back-pass: the hold limit applies
+        // to his feet too, so this one is struck even if no receiver plan exists.
+        const aim = pk.target.clone().sub(e.ball.pos).setY(0);
+        if (aim.lengthSq() < 1e-4) aim.set(e.ai.attackSign(p.team, e.rules.half), 0, 0);
+        releaseToKick(e, p);
+        captureOffsideAtKick(e, p, activeRestart?.kind);
+        e.ball.kick(aim.normalize(), pk.power ?? CONFIG.player.kickPower.punt, 0.42);
+        ballReleasedByAction = true;
+        if (!activeRestart) e.openPlayKickCount++;
+        break;
+      }
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
       if (!plan) {
         // A clearance needs no receiver: a defender under pressure in his own third
@@ -218,10 +234,20 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
       } else if (quality.outcome === "foul" && carrier) {
         tackleOutcome = "foul";
         stats.fouls++;
-        carrier.stumbleT = CONFIG.tackle.foulStumble;
-        startAction(e, carrier, "stumble");
         e.rules.emit("FOUL", `Foul by ${p.team === 0 ? "RED" : "BLUE"} ${action} · ${quality.reason}`, p.team);
-        if (e.foulsOn) {
+        // The referee's sanctions are booked on the foul itself, whether or not
+        // the whistle stops play (advantage, or a no-whistle prototype build).
+        const card = issueCards(e, p, quality);
+        const advantage = advantageAvailable(e, carrier);
+        if (advantage.playOn) {
+          // Play on: the fouled side keeps a usable ball, so the whistle stays
+          // down. The challenge is still paid for and still on the record.
+          carrier.stumbleT = Math.max(carrier.stumbleT, CONFIG.tackle.foulStumble * 0.35);
+          e.rules.emit("ADVANTAGE", `Advantage played — ${carrier.team === 0 ? "RED" : "BLUE"} keep the ball · ${advantage.reason}`, carrier.team);
+          aiEvent(e, `ADVANTAGE played · ${advantage.reason}${card ? ` · card ${card}` : ""}`);
+        } else if (e.foulsOn) {
+          carrier.stumbleT = CONFIG.tackle.foulStumble;
+          startAction(e, carrier, "stumble");
           // A foul on the carrier inside the box he is ATTACKING is a penalty; the
           // old test used the carrier's own goal, so every foul in the attacking box
           // became a free kick and no penalty could ever be awarded.
@@ -235,6 +261,8 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         } else {
           // Fouls may be disabled for a no-whistle prototype, but the bad
           // challenge is still punished: no possession, recovery and a stumble.
+          carrier.stumbleT = CONFIG.tackle.foulStumble;
+          startAction(e, carrier, "stumble");
           e.rules.emit("TACKLE", "Bad challenge · fouls disabled, play on", p.team);
         }
       } else {
@@ -330,6 +358,18 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
     case "gk_punt": {
       if (pk?.action !== action) { p.pendingKick = null; break; }
       if (!ownerIsMe) break;
+      if (pk.forced) {
+        // Forced clearance (keeper hold limit): struck straight down the target
+        // line. No receiver plan, no offside target, nothing that can cancel it.
+        const aim = pk.target.clone().sub(e.ball.pos).setY(0);
+        if (aim.lengthSq() < 1e-4) aim.set(e.ai.attackSign(p.team, e.rules.half), 0, 0);
+        releaseToKick(e, p);
+        captureOffsideAtKick(e, p, activeRestart?.kind);
+        e.ball.kick(aim.normalize(), pk.power ?? CONFIG.player.kickPower.punt, 0.42);
+        ballReleasedByAction = true;
+        if (!activeRestart) e.openPlayKickCount++;
+        break;
+      }
       const plan = planNamedPass(e, p, action, pk?.passTo, pk?.power, activeRestart?.kind);
       if (!plan) {
         p.decisionReason = "GK PUNT CANCELLED · no valid named teammate";

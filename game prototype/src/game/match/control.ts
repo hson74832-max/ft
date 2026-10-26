@@ -9,6 +9,7 @@ import { _v1, _v2 } from "./scratch";
 import { yawDelta, yawOf } from "../angles";
 import { isKickAction, kickFacingError, powerForAction, startAction } from "./actions";
 import { carrierIsProtected } from "./tackles";
+import { forceKeeperRelease } from "./keeper";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -231,11 +232,19 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
     runSerial: p.runSerial, style: p.style, attributes: p.attributes,
     moveTarget: p.moveTarget, desiredSpeed: p.desiredSpeed, pendingPassTo: p.pendingKick?.passTo,
     tackleRecoveryT: p.tackleRecoveryT, tackleProtectionT: p.tackleProtectionT,
+    yellowCards: p.yellowCards,
     perception: p.perception,
   };
   if (p.role === "GK" && e.ball.possessedBy === p.idx) {
     p.holdT += dt;
     p.moveTarget.copy(p.pos); p.desiredSpeed = 0;
+    // Hard distribution limit: a keeper who has held the ball for the limit
+    // releases it himself, long, whatever the distribution choice would be.
+    // This is a law, not a preference, so it is checked before any AI decision.
+    if (p.holdT >= CONFIG.ai.gkHoldLimit && forceKeeperRelease(e, p)) {
+      if (tr) { tr.branch = "gkForceRelease"; tr.startActionResult = `ok:gk-release(${CONFIG.ai.gkHoldLimit}s limit)`; }
+      return;
+    }
     const pressure = e.ai.goalkeeperPressure(wp, snap);
     if (!pressure.urgent && p.holdT < (e.ball.handsRestrictedTeam === p.team ? 0.35 : 1.25)) {
       p.decisionReason = "GK hold · choosing distribution";
@@ -277,30 +286,43 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
       // struck only after he stops and pivots onto it (faceTarget is read by the
       // facing pass in ./frame). A player who is already standing still turns into
       // the wind-up itself — that is the visible turn before the ball leaves.
+      // A pivot is a STOP, not a slow run: a body that is still travelling keeps its
+      // facing locked to its velocity (./frame), so a player asked to turn while
+      // moving at >0.4 m/s can never satisfy the facing test — he would run at the
+      // touchline clamp forever with the kick queued. `kickTurnT` is the backstop:
+      // after this long the kick is struck with whatever angle he has.
+      const pivoting = p.faceTarget !== null;
       if (dec.action && isKickAction(dec.action) && actionTarget && !p.restartTaker
-        && p.speed > 0.45
+        && p.speed > 0.45 && p.kickTurnT < CONFIG.ai.kickTurnLimit
         && kickFacingError(p, actionTarget) > CONFIG.ai.kickFacingAngle) {
+        p.kickTurnT += Math.max(dt, 1 / 120);
         p.faceTarget = actionTarget.clone();
         p.faceTargetT = 1.0;
         p.moveTarget.copy(p.pos);
-        p.desiredSpeed = Math.min(p.desiredSpeed, 1.2);
+        p.desiredSpeed = 0;
         p.decisionReason = "Turn to face the kick target";
         e.ai.nextThink.set(p.idx, e.clock + 0.06);
         if (tr) tr.startActionResult = "skipped:turning-to-face";
       } else {
+        if (pivoting) p.faceTarget = null;
+        p.kickTurnT = dec.action ? 0 : p.kickTurnT;
         const ok = startAction(e, p, dec.action, actionTarget, dec.passTo, undefined, powerForAction(p, dec.action));
-        if (ok) { p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec); }
-        else {
+        if (ok) {
+          p.holdT = 0; e.lastAppliedDecision.set(p.idx, dec); e.ai.commitDecision(p.idx, dec);
+          if (tr) tr.startActionResult = `ok:${dec.action}`;
+        } else {
           const cooldownRemaining = Math.max(
             p.anim.cooldowns.get(dec.action) ?? 0,
             dec.action.startsWith("tackle_") ? p.tackleRecoveryT : 0,
           );
           e.ai.nextThink.set(p.idx, e.clock + Math.max(0.05, cooldownRemaining)); // retry after cooldown decays
+          // Keep the specific cause. A generic "rejected" label used to overwrite
+          // it here, which left the debug table naming a cooldown instead of the
+          // real reason (turning to face, recovery, missing clip, …).
           if (tr) tr.startActionResult = cooldownRemaining > 0
             ? `skipped:recovery(${cooldownRemaining.toFixed(2)}s)`
             : "skipped:clip-rejected";
         }
-        if (tr) tr.startActionResult = ok ? `ok:${dec.action}` : `rejected:${dec.action}(cooldown ${(p.anim.cooldowns.get(dec.action) ?? 0).toFixed(2)}s)`;
       }
     }
   } else {

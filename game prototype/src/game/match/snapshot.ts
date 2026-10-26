@@ -31,7 +31,12 @@ export function buildSnapshot(e: MatchHost) {
     selIdx: sel?.idx ?? -1, selTeam: sel?.team ?? -1, selRole: sel?.role ?? "—",
     decisions: e.players.map((p) => ({ idx: p.idx, team: p.team, role: p.role, reason: p.decisionReason, utils: p.utilities, x: p.pos.x, z: p.pos.z,
       human: !e.spectator && p.idx === e.humanIdx, job: p.supportJob, mode: p.supportMode,
-      target: [p.moveTarget.x, p.moveTarget.z], passOptions: p.passOptions })),
+      target: [p.moveTarget.x, p.moveTarget.z], passOptions: p.passOptions,
+      yellowCards: p.yellowCards, blueCardRemaining: Math.max(0, p.blueCardUntil - e.clock) })),
+    // Disciplinary state for the HUD: carded players and anyone serving a blue card.
+    cards: e.players.filter((p) => p.yellowCards > 0 || p.blueCardUntil > e.clock)
+      .map((p) => ({ idx: p.idx, team: p.team, role: p.role, yellow: p.yellowCards,
+        blueRemaining: Math.max(0, p.blueCardUntil - e.clock) })),
     tacticalStats: { ...e.tacticalStats },
     attackPlans: [0, 1].map((team) => {
       const plan = e.ai.tactics.current(team);

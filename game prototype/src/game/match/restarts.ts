@@ -15,6 +15,7 @@ import { clearPerception, seedPerception } from "./perception";
 import { laneOpenness } from "./passPlanning";
 import { evaluateGkDistribution } from "./passPlanning";
 import { resetTackleState } from "./tackles";
+import { isOffPitch, sendOffPitchPlayersToBench } from "./referee";
 import type { EnginePlayer, GkDistribution, RestartTarget } from "./types";
 import type { MatchHost } from "./host";
 
@@ -56,8 +57,9 @@ export function resetPositions(e: MatchHost, kind: string) {
     const sign = e.ai.attackSign(kickTeam, e.rules.half);
     // Derive the two kickoff candidates from the roster instead of assuming
     // exactly five players per team and fixed indices 3 and 4.
-    const attackers = e.players.filter((p) => p.team === kickTeam && (p.role === "MID" || p.role === "FWD"));
-    const outfield = e.players.filter((p) => p.team === kickTeam && p.role !== "GK");
+    const eligible = e.players.filter((p) => p.team === kickTeam && !isOffPitch(e, p));
+    const attackers = eligible.filter((p) => p.role === "MID" || p.role === "FWD");
+    const outfield = eligible.filter((p) => p.role !== "GK");
     const candidates = (attackers.length >= 2 ? attackers : outfield).slice(0, 2);
     const kicker = candidates.length
       ? stagingRng.weighted(candidates.map((p) => ({ value: p, weight: p.style.directness + p.style.creativity * 0.45 })))
@@ -100,6 +102,9 @@ export function resetPositions(e: MatchHost, kind: string) {
   // belongs to the restart id: re-stamping the kickoff with a fresh id while the
   // old warning is still held silently swallows the next "restart delayed" notice
   // and leaves the AI waiting on a trigger it has already been told about.
+  // The kickoff staging above places every player from his formation home. A
+  // blue-carded player may not take part, so put him back on his bench spot.
+  sendOffPitchPlayersToBench(e);
   e.restartStartedId = -1; e.restartLaunchedId = -1; e.restartRetries = 0; e.restartContactT = 0;
   e.warnedRestartId = -1;
   if (e.rules.pendingRestart && e.rules.pendingRestart.kind !== "kickoff") e.rules.pendingRestart = null;
@@ -141,7 +146,8 @@ export function placeForRestart(e: MatchHost) {
     // measured distance from *home* positions, so the same forward was
     // teleported in as taker no matter who was at the flag.
     const sign = e.ai.attackSign(pr.team, e.rules.half);
-    const takers = e.players.filter((p) => p.team === pr.team && (pr.kind === "goal_kick" ? p.role === "GK" : p.role !== "GK"));
+    const takers = e.players.filter((p) => p.team === pr.team && !isOffPitch(e, p)
+      && (pr.kind === "goal_kick" ? p.role === "GK" : p.role !== "GK"));
     // Kickoffs never reach this branch — resetPositions stages their taker.
     const selectTaker = () => {
       if (pr.kind === "goal_kick") return takers[0] ?? null;
@@ -464,6 +470,9 @@ export function placeForRestart(e: MatchHost) {
     }
   }
   e.restartAutoT = 0.55;
+  // Every branch above places players from a formation/shape template. A
+  // blue-carded player may not stand in that shape — put him back on his bench.
+  sendOffPitchPlayersToBench(e);
   // The dead-ball layout is visible to everyone: hand each player the picture he
   // starts the restart with instead of an empty memory.
   seedPerception(e);
@@ -474,7 +483,31 @@ export function placeForRestart(e: MatchHost) {
  * `rng` is an attempt-local stream by default: a cancelled delivery or watchdog
  * retry must not shift the shared match RNG for every later AI decision.
  */
+/**
+ * Keep a delivery inside the field of play. Every restart aim point comes from a
+ * teammate's position plus a sampled offset (a throw-in "up the line", a corner
+ * zone, a goal-kick punt), and near a byline those offsets push the aim point past
+ * the goal line: the taker then strikes the ball at a spot behind the goal. The
+ * taker may stand outside the pitch, the ball he aims at may not.
+ */
+export function clampAimToPitch(target: THREE.Vector3, margin = CONFIG.ai.outPlaySafetyMargin): THREE.Vector3 {
+  const hx = Math.max(0.5, CONFIG.pitch.length / 2 - margin);
+  const hz = Math.max(0.5, CONFIG.pitch.width / 2 - margin);
+  return target.set(THREE.MathUtils.clamp(target.x, -hx, hx), 0, THREE.MathUtils.clamp(target.z, -hz, hz));
+}
+
 export function sampleRestartTarget(
+  e: MatchHost,
+  pr: NonNullable<RulesEngine["pendingRestart"]>,
+  taker: EnginePlayer,
+  rng: SeededRandom = e.rng,
+): RestartTarget {
+  const picked = sampleRestartTargetRaw(e, pr, taker, rng);
+  clampAimToPitch(picked.target);
+  return picked;
+}
+
+function sampleRestartTargetRaw(
   e: MatchHost,
   pr: NonNullable<RulesEngine["pendingRestart"]>,
   taker: EnginePlayer,

@@ -17,6 +17,8 @@ export interface TackleChallenge {
   idealContact: number;
   startBallDist: number;
   startCarrierDist: number;
+  /** `frontDot` at the wind-up — the angle the challenger actually committed from. */
+  startFrontDot: number;
 }
 
 /** A match participant: simulation state, animation controller and mesh rig. */
@@ -25,13 +27,22 @@ export interface EnginePlayer {
   pos: THREE.Vector3; vel: THREE.Vector3; facing: number;
   speed: number; rig: PlayerRig; anim: AnimationController;
   moveTarget: THREE.Vector3; desiredSpeed: number;
-  pendingKick: { action: string; target: THREE.Vector3; passTo?: number; power?: number } | null;
+  /** Queued kick resolved at the clip's contact frame. `forced` marks a clearance
+   * the referee's hold limit demands: it is struck at its target and can never be
+   * cancelled by a receiver plan. */
+  pendingKick: { action: string; target: THREE.Vector3; passTo?: number; power?: number; forced?: boolean } | null;
   holdT: number; stumbleT: number;
   /** Recovery after attempting a challenge; blocks another tackle even if the clip ends early. */
   tackleRecoveryT: number;
   /** Brief protection after winning a challenge; breaks immediate possession ping-pong. */
   tackleProtectionT: number;
   tackleChallenge: TackleChallenge | null;
+  /** Yellow cards shown to this player (two yellows ⇒ blue card, see ./referee). */
+  yellowCards: number;
+  /** Match-clock time at which a blue card expires; `> clock` means off the pitch. */
+  blueCardUntil: number;
+  /** Total fouls this player has conceded — the referee's patience, and the AI's. */
+  foulsConceded: number;
   callForBall: boolean; isHuman: boolean; stamina: number;
   decisionReason: string; utilities: Record<string, number>;
   restartTaker: boolean;
@@ -41,6 +52,14 @@ export interface EnginePlayer {
   /** Body orientation the player must reach before the queued kick can be struck. */
   faceTarget: THREE.Vector3 | null;
   faceTargetT: number;
+  /**
+   * Seconds spent trying to pivot onto a kick target. A carrier pinned against a
+   * touchline can never satisfy the facing test (his velocity, not his shoulders,
+   * owns the body angle), which used to stall the whole match: the turn was
+   * re-requested every 0.06 s and the kick never left. Past the cap the kick is
+   * struck anyway rather than looping.
+   */
+  kickTurnT: number;
   /** Holding the ball up with the body between it and the nearest opponent. */
   shielding: boolean;
   /** Boot the current kick is struck with, chosen from the body angle at the wind-up. */
@@ -60,7 +79,7 @@ export interface ActionSeedRecord { seed: number; t: number; player: number; act
 /** Per-player, per-frame AI pipeline trace (populated only with ?debug=ai). */
 export interface AITraceRow {
   idx: number; team: number; role: string; hasBall: boolean;
-  branch: string;              // restartHold | human | frozen | gkHold | ai
+  branch: string;              // restartHold | human | frozen | gkHold | gkForceRelease | benched | ai
   thinkCalled: boolean; thinkFresh: boolean;
   decisionReason: string; actionReturned: string | null;
   startActionResult: string;   // n/a | ok | rejected:<why> | skipped:<why>

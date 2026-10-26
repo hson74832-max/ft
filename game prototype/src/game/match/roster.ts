@@ -5,6 +5,7 @@ import { AnimationController } from "../anims";
 import { createPlayerMesh, generateVariant } from "../playerMesh";
 import { tieBreakHash } from "../random";
 import { createPerception } from "./perception";
+import { isOffPitch } from "./referee";
 import type { MatchHost } from "./host";
 import type { EnginePlayer } from "./types";
 
@@ -40,10 +41,11 @@ export function buildPlayers(e: MatchHost) {
         moveTarget: new THREE.Vector3(f.home[0], 0, f.home[1]), desiredSpeed: 0,
         pendingKick: null, holdT: 0, stumbleT: 0,
         tackleRecoveryT: 0, tackleProtectionT: 0, tackleChallenge: null,
+        yellowCards: 0, blueCardUntil: 0, foulsConceded: 0,
         callForBall: false, isHuman: false, stamina: 1,
         decisionReason: "init", utilities: {}, restartTaker: false,
         runSerial: 0, style: e.ai.sampleStyle(f.role, idx), attributes: e.ai.sampleAttributes(f.role, idx),
-        perception: createPerception(e.matchSeed, idx), faceTarget: null, faceTargetT: 0,
+        perception: createPerception(e.matchSeed, idx), faceTarget: null, faceTargetT: 0, kickTurnT: 0,
         shielding: false, strikeFoot: "R", shieldPoint: new THREE.Vector3(f.home[0], 0, f.home[1]), strideFacing: null,
       });
     });
@@ -65,6 +67,7 @@ export function setHumanPlayer(e: MatchHost, p: EnginePlayer) {
   // human slot around (humanControl is already gated on !spectator).
   if (e.spectator) return;
   if (p.team !== e.humanTeam || p.role === "GK") return;
+  if (isOffPitch(e, p)) return;
   const current = e.players[e.humanIdx];
   if (current && current.idx !== p.idx) current.isHuman = false;
   e.humanIdx = p.idx;
@@ -75,7 +78,8 @@ export function setHumanPlayer(e: MatchHost, p: EnginePlayer) {
 /** Pass the human slot to the nearest outfielder to the ball. */
 export function switchToNearest(e: MatchHost, manual = false) {
   if (e.spectator) return;
-  const mates = e.players.filter((p) => p.team === e.humanTeam && p.role !== "GK");
+  // A blue-carded player is off the pitch and cannot be controlled.
+  const mates = e.players.filter((p) => p.team === e.humanTeam && p.role !== "GK" && !isOffPitch(e, p));
   const ranked = [...mates].sort((a, b) => a.pos.distanceTo(e.ball.pos) - b.pos.distanceTo(e.ball.pos));
   // A manual switch must always do something: when the nearest man is already
   // selected, [X] cycles to the next one out instead of silently no-opping.

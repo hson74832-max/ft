@@ -10,7 +10,8 @@
     "verify:motion": "esbuild scripts/motion-pipeline.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/motion-pipeline.cjs && node .test-artifacts/motion-pipeline.cjs",
     "verify:duels": "esbuild scripts/duel-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/duel-regression.cjs && node .test-artifacts/duel-regression.cjs",
     "verify:gameplay": "esbuild scripts/gameplay-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/gameplay-regression.cjs && node .test-artifacts/gameplay-regression.cjs",
-    "verify:perception": "esbuild scripts/perception-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/perception-regression.cjs && node .test-artifacts/perception-regression.cjs"
+    "verify:perception": "esbuild scripts/perception-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/perception-regression.cjs && node .test-artifacts/perception-regression.cjs",
+    "verify:referee": "esbuild scripts/referee-regression.ts --bundle --platform=node --format=cjs --outfile=.test-artifacts/referee-regression.cjs && node .test-artifacts/referee-regression.cjs"
   },
   "dependencies": {
     "@types/three": "^0.186.0",
