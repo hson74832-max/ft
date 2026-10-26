@@ -2,7 +2,8 @@
 import * as THREE from "three";
 import { CONFIG, FORMATIONS } from "./config";
 import { predictTrajectory } from "./ball";
-import { clipExists } from "./anims";
+import { clipExists, getClip } from "./anims";
+import { tackleReach } from "./match/tackles";
 import { SeededRandom, streamSeed, tieBreakHash } from "./random";
 import { TeamTactics, groundDistance, laneSafety, nearestSpace, onsideLimit, spaceAhead, type RunType, type SupportJob } from "./tactics";
 import { believedPos, seesNow, type Perception } from "./match/perception";
@@ -804,8 +805,14 @@ export class AIController {
     const shotKey = `shoot:${Math.floor(distance / 4)}`;
     // Shot score: expected-goal quality (distance, lane, window) scaled by the
     // shooter's finishing style, minus block risk under pressure and fatigue.
+    // Long shots are a low-percentage option, and with the range-scaled spread they
+    // mostly miss the target: the AI's eagerness at 12–15 m turned into a
+    // goal-kick loop (23 in one four-minute replay). Pay for the range instead.
+    const rangeCost = THREE.MathUtils.clamp(
+      (distance - T.clearShotDistance) / Math.max(1, T.edgeShotDistance - T.clearShotDistance), 0, 1,
+    ) * 0.30;
     const shoot = inRange
-      ? 0.26 + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
+      ? 0.26 - rangeCost + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
         + ((p.attributes?.shooting.offensiveAwareness ?? 75) - 75) * 0.004
         + ((distance > T.clearShotDistance ? p.attributes?.shooting.longShots ?? 75 : p.attributes?.shooting.finishing ?? 75) - 75) * 0.002
         - (pressed && shotLane < 0.4 ? 0.18 : 0) - novelty(shotKey) * 0.2 - (1 - p.stamina) * 0.18
@@ -1197,8 +1204,14 @@ export class AIController {
       const age = snap.ballKickAge ?? 9;
       const prev = this.gkRead.get(p.idx);
       if (!prev || age < prev.age) {
+        // A body in the corridor between the strike and the keeper makes the flight
+        // harder to read. The striker himself is NOT a screen: the ball is at his
+        // feet when it leaves, so counting him made every shot in the game
+        // "screened", inflating both the read error and the timing error by 1.7×.
+        const corridor = new THREE.Vector3(p.pos.x, 0, shot.z);
         const screened = snap.players.some((q) => q.idx !== p.idx && q.role !== "GK"
-          && this.pointNearSegment(q.pos, snap.ballPos, new THREE.Vector3(p.pos.x, 0, shot.z), 0.7));
+          && q.pos.distanceTo(snap.ballPos) > 1.2
+          && this.pointNearSegment(q.pos, snap.ballPos, corridor, 0.7));
         const difficulty = (ballSpeed / 20) * (screened ? 1.7 : 1);
         // Anticipation decides how well the strike is read before it is struck:
         // a good reader mis-judges the flight less.
@@ -1209,8 +1222,15 @@ export class AIController {
         const timing = rng.range(-0.5, 1) * CONFIG.ai.gkTimingError * difficulty;
         this.gkRead.set(p.idx, { age, err, timing });
       } else prev.age = age;
-      shot.z += this.gkRead.get(p.idx)!.err;
-      shot.timeLeft += this.gkRead.get(p.idx)!.timing; // late reader perceives more time → commits late
+      const read = this.gkRead.get(p.idx)!;
+      shot.z += read.err;
+      // The timing error belongs to the COMMIT, not to the flight. Adding it to
+      // `timeLeft` (the old model) made the keeper believe a 0.36 s shot had 0.7 s
+      // left, so he kept shuffling while the ball went past: the dive started 0.15 s
+      // before arrival and could reach nothing. A keeper who reads the strike late now
+      // commits late (with less of the dive available), which is the same mistake made
+      // in the right units.
+      const commitLead = CONFIG.ai.gkDiveContactTime + CONFIG.ai.gkCommitAnticipation - read.timing;
       shot.lateral = Math.abs(shot.z - p.pos.z);
       shot.reachable = shot.lateral <= shot.reach;
       const goalHalf = CONFIG.pitch.goalWidth / 2 - CONFIG.ai.gkNearPostInset;
@@ -1218,12 +1238,19 @@ export class AIController {
       const util = { save: shot.reachable ? 1 : 0, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach };
       const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
       const reactionTime = CONFIG.ai.gkReactionTime * THREE.MathUtils.clamp(1.5 - reflexes / 150, 0.65, 1.25);
-      if (snap.ballKickAge !== undefined && snap.ballKickAge < reactionTime) {
+      // A ball that will arrive before the keeper could have "processed" the strike is
+      // not a reason to stand still: no keeper waits out a reaction time he does not
+      // have — he throws out a hand or a leg instinctively. This matters most for the
+      // penalty and for point-blank shots, where the whole flight is shorter than the
+      // simple reaction time: the old gate froze the keeper until the ball was past, so
+      // a penalty could only ever be stopped by the ball hitting his body.
+      const instinct = shot.timeLeft < reactionTime;
+      if (!instinct && snap.ballKickAge !== undefined && snap.ballKickAge < reactionTime) {
         // Human reaction time: the keeper has not processed the strike yet.
         return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: null, reason: `GK reacting · ${(snap.ballKickAge * 1000) | 0}ms`, utilities: util, urgent: true };
       }
       // Commit once; while the save clip plays the keeper must not restart it.
-      const commit = shot.timeLeft <= CONFIG.ai.gkDiveContactTime + 0.06 && !p.busy;
+      const commit = (instinct || shot.timeLeft <= Math.max(0.12, commitLead)) && !p.busy;
       if (commit) {
         let action: string;
         const handling = p.attributes?.goalkeeping.handling ?? 75;
@@ -1709,7 +1736,26 @@ export class AIController {
     // side that could never be won cleanly and only ever gave away fouls.
     // A booked player is stricter with himself: no blind-side lunges at all.
     const blindsideLimit = (p.yellowCards ?? 0) > 0 ? CONFIG.referee.bookedMinFrontDot : -0.35;
-    return frontDot >= blindsideLimit;
+    if (frontDot < blindsideLimit) return false;
+    // Do not lunge at a ball that is already out of reach. The callers gate on the
+    // distance to the CARRIER (1.5 m), but the ball sits 0.5 m ahead of him, so a
+    // quarter of all challenges started 2 m from the ball and could only ever be a
+    // whiff or a foul. Keep pressing instead; the challenge gate opens as he closes.
+    const ballDist = Math.hypot(snap.ballPos.x - p.pos.x, snap.ballPos.z - p.pos.z);
+    if (ballDist > tackleReach(clip) + 0.55) return false;
+    // ...and do not lunge at a ball that will already have gone by the time the boot
+    // arrives. The tackle is judged at the clip's contact frame (0.27 s standing,
+    // 0.47 s sliding): a carrier moving away at 4 m/s is a metre further off by then,
+    // so the challenge could only ever be a whiff — over half of all AI challenges
+    // in the replay. Only commit when the ball projects to be within reach, with a
+    // small tolerance for the defender's own closing momentum.
+    const meta = getClip(clip);
+    const eta = Math.max(0.12, meta.duration * (meta.contactFrame ?? 0.5));
+    const projected = Math.hypot(
+      snap.ballPos.x + carrier.vel.x * eta - p.vel.x * eta * 0.5 - p.pos.x,
+      snap.ballPos.z + carrier.vel.z * eta - p.vel.z * eta * 0.5 - p.pos.z,
+    );
+    return projected <= tackleReach(clip) + 0.55;
   }
 
   commitDecision(idx: number, decision: AIDecision) {

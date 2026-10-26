@@ -24,6 +24,8 @@ import { headlessEngineCanvas } from "./harness"; // installs the headless DOM s
 import assert from "node:assert/strict";
 import { MatchEngine } from "../src/game/engine";
 import { CONFIG } from "../src/game/config";
+import { kickFacingError } from "../src/game/match/actions";
+import { evaluateGkDistribution } from "../src/game/match/passPlanning";
 
 const L = CONFIG.pitch.length / 2, W = CONFIG.pitch.width / 2, R = CONFIG.ball.radius;
 const GOAL_HALF = CONFIG.pitch.goalWidth / 2;
@@ -252,6 +254,83 @@ test("a corner is delivered into the danger area, not onto the keeper's near pos
     assert.ok(!runner!.restartTaker, "the taker does not name himself");
   }
   assert.ok(checked, "the corner must be planned");
+  e.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// 7. Strike orientation
+// ---------------------------------------------------------------------------
+test("a stationary striker turns his body before striking a ball behind him", () => {
+  const e = fresh();
+  // Ten metres out, dead central, shoulders square to the goal he is attacking, and
+  // standing still — exactly the situation the old facing gate skipped. It only ran
+  // for a player already moving (`p.speed > 0.45`), and the AI's shot decision leaves
+  // the striker stationary, so he could strike a ball that was behind his body.
+  for (const p of e.players) {
+    p.pos.set(-10, 0, p.idx % 2 ? 9 : -9);
+    p.moveTarget.copy(p.pos);
+    p.desiredSpeed = 0;
+    p.vel.set(0, 0, 0);
+    p.speed = 0;
+  }
+  const attacker = e.players.find((q) => q.team === 0 && q.role === "FWD")!;
+  const goal = e.ai.goalPos(0, e.rules.half);
+  attacker.pos.set(goal.x - 10, 0, 0);
+  attacker.moveTarget.copy(attacker.pos);
+  attacker.facing = Math.PI; // back to goal
+  attacker.vel.set(0, 0, 0);
+  attacker.speed = 0;
+  e.ball.possess(attacker.idx, 0);
+  e.ball.pos.copy(attacker.pos);
+  let turned = false;
+  let struck = false;
+  let facingErrorAtStrike = Infinity;
+  for (let i = 0; i < 60 * 5 && !struck; i++) {
+    const before = e.actionLog.length;
+    e.step(1 / 60);
+    if (attacker.decisionReason.startsWith("Turn to face")) turned = true;
+    const rec = e.actionLog.slice(Math.max(0, before > 0 ? before - 2 : 0)).find((r) => r.action.startsWith("shoot_"));
+    if (rec) {
+      struck = true;
+      facingErrorAtStrike = kickFacingError(attacker, goal);
+    }
+  }
+  assert.ok(struck, "the clear central striker does shoot");
+  assert.ok(turned, "he pivots on the spot first instead of striking backwards");
+  assert.ok(facingErrorAtStrike < CONFIG.ai.kickFacingAngle + 0.25,
+    `body within the facing cone at the strike, got ${(facingErrorAtStrike * 180 / Math.PI).toFixed(0)}°`);
+  e.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// 8. Goalkeeper distribution lead
+// ---------------------------------------------------------------------------
+test("a goal kick is played to where the receiver will be, not where he is now", () => {
+  const e = fresh();
+  const gk = e.players.find((p) => p.team === 0 && p.role === "GK")!;
+  const receiver = e.players.find((p) => p.idx !== gk.idx && p.team === 0 && p.role !== "GK")!;
+  for (const p of e.players) {
+    if (p.idx === gk.idx || p.idx === receiver.idx) continue;
+    p.pos.set(-14, 0, p.idx % 2 ? 10 : -10);
+    p.vel.set(0, 0, 0);
+    p.moveTarget.copy(p.pos);
+    p.desiredSpeed = 0;
+  }
+  gk.pos.set(-18, 0, 0);
+  e.ball.pos.set(-18, CONFIG.ball.radius, 0);
+  e.ball.vel.set(0, 0, 0);
+  // A receiver running away from goal at 4.5 m/s: a 30 m punt hangs for ~2 s, so the
+  // aim point has to be ~9 m ahead of him. The old flat 0.4 s lead aimed 1.8 m ahead —
+  // at a spot the ball would sail past.
+  receiver.pos.set(6, 0, 3);
+  receiver.vel.set(4.5, 0, 0);
+  receiver.moveTarget.set(18, 0, 3);
+  receiver.desiredSpeed = 4.5;
+  receiver.speed = 4.5;
+  const dist = evaluateGkDistribution(e, gk);
+  assert.ok(dist, "the keeper finds a distribution option");
+  const lead = (dist!.target.x - receiver.pos.x) * Math.sign(receiver.vel.x || 1);
+  assert.ok(lead >= 2.5, `the aim point leads a running receiver, got ${lead.toFixed(2)} m ahead`);
   e.dispose();
 });
 

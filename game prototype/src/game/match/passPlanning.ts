@@ -305,11 +305,23 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer, urgent = 
   const origin = e.ball.pos.clone();
   const sign = e.ai.attackSign(gk.team, e.rules.half);
   const options = mates.map((m) => {
-    const target = m.pos.clone().addScaledVector(m.vel, 0.4);
+    // Lead the receiver by the time the delivery actually takes. The old lead was a
+    // flat 0.4 s — a 4 m pass — while a goal kick travels 15–22 m and hangs for
+    // 1.5–2.5 s, so both the receiver's spot and the space around it were evaluated
+    // where nobody would be when the ball arrived. The distribution then kept
+    // choosing a man who was closed down and tackled the instant he received it
+    // (four identical goal-kick → tackle → shot cycles in a row in the 1234 replay).
+    const straight = m.pos.distanceTo(origin);
+    const cruiseSpeed = straight <= 22 ? 9 : 23; // gk_roll / gk_punt profile ranges
+    const travel = THREE.MathUtils.clamp(estimateKickTravelTime(straight, cruiseSpeed, straight <= 22 ? 0.05 : 0.35), 0.35, 2.6);
+    const target = m.pos.clone().addScaledVector(m.vel, travel);
     target.x = THREE.MathUtils.clamp(target.x, -18.8, 18.8);
     target.z = THREE.MathUtils.clamp(target.z, -11.2, 11.2);
     const dist = Math.hypot(target.x - origin.x, target.z - origin.z);
-    const space = Math.min(...opponents.map((o) => o.pos.distanceTo(target)), 20);
+    // Opponents are moving too: measure the space at their arrival, not at now.
+    const space = Math.min(...opponents.map((o) => Math.hypot(
+      o.pos.x + o.vel.x * travel - target.x, o.pos.z + o.vel.z * travel - target.z,
+    )), 20);
     const lane = laneOpenness(origin, target, opponents);
     const forward = (target.x - gk.pos.x) * sign;
     const short = dist <= 22;
