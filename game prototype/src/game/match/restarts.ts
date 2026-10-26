@@ -196,7 +196,9 @@ export function placeForRestart(e: MatchHost) {
     }
     if (taker) {
       if (pr.kind === "throw_in") {
-        taker.pos.set(pr.pos[0], 0, Math.sign(pr.pos[1]) * (CONFIG.pitch.width / 2 - 0.18));
+        // Throw-in taker stands at the touchline (or just outside it) so the ball
+        // is released legally from the sideline, not from 0.18 m inside the pitch.
+        taker.pos.set(pr.pos[0], 0, Math.sign(pr.pos[1]) * (CONFIG.pitch.width / 2 + 0.3));
       } else if (pr.kind === "goal_kick") {
         const side = Math.sign(pr.pos[0]);
         taker.pos.set(side * (CONFIG.pitch.length / 2 - 2.0), 0, pr.pos[1]);
@@ -451,8 +453,16 @@ export function placeForRestart(e: MatchHost) {
         }
         if (attackingGk) stage(attackingGk, new THREE.Vector3(atkOwnGoal.x + sign * 2.5, 0, 0), ball);
         if (defendingGk) {
-          const gkSpot = keeperPositionTarget(ball, ownGoal, e.ai.attackSign(defendingGk.team, e.rules.half));
-          stage(defendingGk, gkSpot.target, ball);
+          if (isPenalty) {
+            // Law: the defending goalkeeper must remain on the goal line during a
+            // penalty kick. Place the GK on the goal line, aligned with the ball's
+            // z-coordinate (clamped to the posts) so the keeper covers the centre.
+            const gkZ = THREE.MathUtils.clamp(ball.z, -goalHalf, goalHalf);
+            stage(defendingGk, new THREE.Vector3(ownGoal.x, 0, gkZ), ball);
+          } else {
+            const gkSpot = keeperPositionTarget(ball, ownGoal, e.ai.attackSign(defendingGk.team, e.rules.half));
+            stage(defendingGk, gkSpot.target, ball);
+          }
         }
       }
     }

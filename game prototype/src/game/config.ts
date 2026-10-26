@@ -4,7 +4,15 @@
 // ============================================================
 
 export const CONFIG = {
-  pitch: { length: 40, width: 25, wallHeight: 1.1, buffer: 2, goalWidth: 3, goalHeight: 2, goalDepth: 1.2 },
+  pitch: { length: 40, width: 25, wallHeight: 1.1, buffer: 2, goalWidth: 3, goalHeight: 2, goalDepth: 1.2,
+    // Penalty spot: 11 m from goal line on a real 105 m pitch, scaled to 40 m.
+    // 11 / 105 × 40 ≈ 4.19, rounded to 4.2.
+    penaltySpotDist: 4.2,
+    // Penalty area: 16.5 m from goal line on real pitch → 6.3 m on 40 m pitch.
+    penaltyAreaDepth: 6.3,
+    // Goal area: 5.5 m from goal line on real pitch → 2.1 m on 40 m pitch.
+    goalAreaDepth: 2.1,
+  },
   ball: {
     // Surface the ball is playing on. Selects the restitution / friction / rolling
     // coefficient set (see physics/parameters SURFACES) and is live-editable in Settings.

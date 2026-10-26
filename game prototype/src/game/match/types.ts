@@ -73,6 +73,8 @@ export interface EnginePlayer {
   supportRun?: RunType;
   supportMode?: string;
   passOptions?: AIDecision["passOptions"];
+  /** Deferred get_up after a failed slide tackle: fired when the slide clip ends. */
+  pendingGetUp?: boolean;
 }
 
 export interface ActionSeedRecord { seed: number; t: number; player: number; action: string; target?: [number, number, number]; }
