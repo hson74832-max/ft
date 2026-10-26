@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { CONFIG } from "../config";
 import { aiEvent } from "./debug";
 import { isOffPitch } from "./referee";
+import { ballCrossingZ, penaltyGuessCovers } from "./keeper";
 import type { EnginePlayer } from "./types";
 import type { MatchHost } from "./host";
 
@@ -78,6 +79,12 @@ export function resolveBallPlayerCollisions(e: MatchHost) {
     }
     const minimum = (p.role === "GK" ? 0.46 : 0.4) + R;
     if (distance >= minimum || distance >= hitDist) continue;
+    // A penalty keeper only blocks the lane his pre-kick guess covers: without
+    // this the standing cylinder still body-blocked wrong-side spot kicks after
+    // the hand-save volume had correctly let them through.
+    if (p.role === "GK" && e.ball.handsRestrictedTeam !== p.team
+      && e.penaltyKickClock > -99 && e.clock - e.penaltyKickClock < 2.5
+      && !penaltyGuessCovers(e, p, ballCrossingZ(e, p))) continue;
     hit = p; hitDist = distance;
     hitNx = distance > 1e-4 ? dx / distance : 1;
     hitNz = distance > 1e-4 ? dz / distance : 0;

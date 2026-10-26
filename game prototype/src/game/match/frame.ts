@@ -45,6 +45,7 @@ export function buildWorldSnap(e: MatchHost): WorldSnap {
     // The scoreline is part of the picture: effort and body language respond to it.
     score: [e.rules.score[0], e.rules.score[1]],
     passFlight: e.passFlight, lastPass: e.lastPass,
+    penaltyKickClock: e.penaltyKickClock,
   };
 
   return snap;
@@ -159,7 +160,18 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     desired.add(separation);
     const rootAction = p.anim.actionRootMotion;
     if (rootAction) p.vel.multiplyScalar(Math.max(0, 1 - dt * 12));
-    else {
+    else if (p.pendingKick && isKickAction(p.pendingKick.action)) {
+      // Plant before a kick whose target is not ahead of the run. Without a
+      // plant the carrier overran a close stationary target during the windup:
+      // its bearing swung behind him faster than the torso can rotate and the
+      // ball left 140° from where the body faced ("behind the back" kicks).
+      const sp0 = Math.hypot(p.vel.x, p.vel.z);
+      const toKick = _v1.copy(p.pendingKick.target).sub(p.pos); toKick.y = 0;
+      if (sp0 > 0.6 && toKick.lengthSq() > 0.04) {
+        const align = (p.vel.x * toKick.x + p.vel.z * toKick.z) / (sp0 * toKick.length());
+        if (align < 0.35) p.vel.multiplyScalar(Math.max(0, 1 - dt * 7));
+      }
+    } else {
       const sp = Math.hypot(p.vel.x, p.vel.z);
       const dLen = desired.length();
       const dot = sp > 0.05 && dLen > 0.05 ? (p.vel.x * desired.x + p.vel.z * desired.z) / (sp * dLen) : 1;

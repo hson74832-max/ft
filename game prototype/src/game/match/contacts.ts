@@ -255,11 +255,18 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         distance: shotDistance,
         accuracy: shotRating,
         curveSide: p.style.finesseSide,
-        speedScale: 0.55 + (action === "shoot_volley" ? p.attributes.shooting.volleys : p.attributes.shooting.shotPower) / 150,
+        // Capped at 1.12: an uncapped 0.55 + rating/150 reached 1.25 for strong
+        // strikers, which put even the lowered bands back at 33+ m/s. Attribute
+        // power now shifts the strike inside the band instead of breaking it.
+        speedScale: Math.min(1.12, 0.55 + (action === "shoot_volley" ? p.attributes.shooting.volleys : p.attributes.shooting.shotPower) / 150),
         directSpeed: true,
         intensity: THREE.MathUtils.clamp(power / Math.max(1, CONFIG.player.kickPower.shoot), 0.35, 1),
       });
       e.ball.strike(shotDirection, shotStrike);
+      // Stamp the penalty strike: the keeper's dive is a pre-kick guess, and the
+      // AI needs to know it is reading a spot kick rather than an open-play shot
+      // (see goalkeeperDecision → penalty guess branch).
+      if (isPenalty) e.penaltyKickClock = e.clock;
       aiEvent(e, `STRIKE ${shotChoice.name} · ${shotStrike.speed.toFixed(1)} m/s · ${shotStrike.angleDeg.toFixed(1)}° · ${shotStrike.spinRpm.toFixed(0)} rpm`);
       e.tacticalStats.shots++;
       ballReleasedByAction = true;

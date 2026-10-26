@@ -342,8 +342,19 @@ export function evaluateGkDistribution(e: MatchHost, gk: EnginePlayer, urgent = 
   // otherwise go long to the free receiver. Pressured keepers still look long first.
   const useShort = !urgent && !!bestShort && (pressure < 4.2 || (bestShort.lane > 0.5 && bestShort.space > 3.2))
     && bestShort.score >= (longOpts[0]?.score ?? -1) - 0.05;
-  const chosen = (useShort ? bestShort : undefined) ?? longOpts[0] ?? bestShort;
+  let chosen = (useShort ? bestShort : undefined) ?? longOpts[0] ?? bestShort;
   if (!chosen) return null;
+  // A ground roll leaves the ball at the keeper's feet for the whole windup, and
+  // its contact frame only fires ~0.35 s later. With a challenger inside 2.5 m
+  // the ball is trapped before that frame: measured goal-mouth scrambles looped
+  // smother → gk_roll → steal → smother five times. On the compact 5v5 pitch the
+  // long-option list is often empty, so force the most upfield teammate as an
+  // airborne delivery (punt / long pass) instead of accepting the short fallback.
+  if (urgent && pressure < 2.5 && chosen.short) {
+    const escape = [...options].sort((a, b) =>
+      ((b.target.x - gk.pos.x) * sign) - ((a.target.x - gk.pos.x) * sign))[0];
+    if (escape) chosen = { ...escape, short: false };
+  }
   // The named delivery profile is chosen at the contact frame, where the keeper's
   // actual pressure, distance and foot are known (see ./contacts, "gk_punt").
   return {

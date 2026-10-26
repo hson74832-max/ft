@@ -68,11 +68,16 @@ export const ACTION_PROFILES: Record<string, ActionProfile> = {
   freekick_knuckle: P("freekick_knuckle", "Knuckleball free kick", "free_kick", [20, 35], [20, 28], [8, 15], [0, 60], "knuckle", "ground", "Almost no spin: unstable, unpredictable flight."),
 
   // ---- shots --------------------------------------------------------------
-  shot_low_driven: P("shot_low_driven", "Low driven shot", "shot", [10, 30], [22, 32], [2, 8], [100, 250], "back", "ground", "Hard and low into a corner."),
-  shot_dipping_topspin: P("shot_dipping_topspin", "Dipping topspin shot", "shot", [18, 35], [22, 30], [8, 15], [500, 800], "top", "ground", "Rises then dips under the bar."),
-  shot_chip: P("shot_chip", "Chip", "shot", [8, 25], [12, 18], [25, 40], [400, 700], "back", "ground", "Backspin lob over the goalkeeper."),
-  shot_volley: P("shot_volley", "Volley", "shot", [10, 25], [20, 30], [8, 20], [200, 400], "mixed", "air", "Struck out of the air."),
-  shot_half_volley: P("shot_half_volley", "Half volley", "shot", [10, 25], [18, 28], [3, 10], [200, 400], "mixed", "just off the ground", "Struck as the ball rises off the grass."),
+  // Small-sided pace bands. The old [22,32] bands × the shooter's power scale
+  // produced 30–35 m/s strikes (measured match average 32 m/s, cap 34.7): on a
+  // 40 m pitch a 10 m shot then arrived in ~0.30 s, inside the 0.35 s keeper
+  // decision delay, so long shots were physically unsaveable. The in-match shot
+  // reference is 14–32 m/s with a 24 m/s mean; these bands centre on that mean.
+  shot_low_driven: P("shot_low_driven", "Low driven shot", "shot", [10, 30], [17, 27], [2, 8], [100, 250], "back", "ground", "Hard and low into a corner."),
+  shot_dipping_topspin: P("shot_dipping_topspin", "Dipping topspin shot", "shot", [18, 35], [17, 26], [8, 15], [500, 800], "top", "ground", "Rises then dips under the bar."),
+  shot_chip: P("shot_chip", "Chip", "shot", [8, 25], [11, 17], [25, 40], [400, 700], "back", "ground", "Backspin lob over the goalkeeper."),
+  shot_volley: P("shot_volley", "Volley", "shot", [10, 25], [16, 25], [8, 20], [200, 400], "mixed", "air", "Struck out of the air."),
+  shot_half_volley: P("shot_half_volley", "Half volley", "shot", [10, 25], [15, 24], [3, 10], [200, 400], "mixed", "just off the ground", "Struck as the ball rises off the grass."),
   header_attacking: P("header_attacking", "Attacking header", "header", [5, 15], [10, 18], [-5, 15], [0, 150], "none", "head height", "Directed header, often downwards."),
 
   // ---- goalkeeper distributions ------------------------------------------
