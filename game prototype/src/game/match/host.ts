@@ -95,6 +95,10 @@ export interface MatchHost {
   offsideCandidates: Set<number>;
   offsideTeam: number | null;
 
+  // --- penalties -------------------------------------------------------------
+  /** Match clock of the most recent penalty kick (strike frame), -999 if none. */
+  penaltyKickClock: number;
+
   // --- possession -----------------------------------------------------------
   lastKnownOwnerIdx: number | null;
   lastKnownOwnerTeam: number | null;

@@ -25,6 +25,7 @@ export function resetPositions(e: MatchHost, kind: string) {
   e.passFlight = undefined; e.lastPass = undefined; e.frameWorld = null;
   e.ball.handsRestrictedTeam = null;
   e.offsideCandidates.clear(); e.offsideTeam = null;
+  e.penaltyKickClock = -999;
   const halfFlip = e.rules.half === 2 ? -1 : 1;
   const stagingKey = `kickoff:${e.rules.half}:${e.rules.pendingRestart?.id ?? 0}:${Math.round(e.clock * 100)}`;
   // A local stream keeps a manual reset from shifting the live match RNG. It is
@@ -143,6 +144,7 @@ export function placeForRestart(e: MatchHost) {
   // A stale offside snapshot from the move that led to the restart must not
   // survive into the restart setup (captureOffsideAtKick re-snaps at the kick).
   e.offsideCandidates.clear(); e.offsideTeam = null;
+  e.penaltyKickClock = -999;
   if (pr.kind === "kickoff") resetPositions(e, "kickoff");
   else {
     e.ball.pos.set(pr.pos[0], CONFIG.ball.radius, pr.pos[1]);

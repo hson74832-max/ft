@@ -174,6 +174,9 @@ export interface WorldSnap {
   transitionUntil?: number;
   /** Current scoreline, [team0, team1] — mentality reads the match state. */
   score?: [number, number];
+  /** Match clock of the latest penalty kick strike; keepers treat the next
+   *  2.5 s as a spot-kick guess rather than a reactive open-play save. */
+  penaltyKickClock?: number;
 }
 
 export interface AIDecision {
@@ -249,6 +252,8 @@ export class AIController {
   /** Engine-provided distribution evaluator (space + lane + pressure), not a distance rule. */
   gkDistribution: ((gkIdx: number, urgent?: boolean) => { action: string; receiverIdx: number; target: THREE.Vector3; reason: string } | null) | null = null;
   private gkRead = new Map<number, { age: number; err: number; timing: number }>();
+  /** Per-keeper pre-kick penalty guess: where he has committed to dive. */
+  private gkPenaltyGuess = new Map<number, { clock: number; z: number }>();
   /** Last kick cancelled at its contact frame, per player, with its failure streak. */
   private failedKicks = new Map<number, { key: string; count: number }>();
   /** One decision stream per player: a human/spectator branch cannot shift teammates' noise. */
@@ -273,6 +278,7 @@ export class AIController {
     this.decisionContext.clear();
     this.playerStreams.clear();
     this.gkRead.clear();
+    this.gkPenaltyGuess.clear();
     this.failedKicks.clear();
     this.lastInvolvement.clear();
   }
@@ -798,10 +804,17 @@ export class AIController {
     const windowRatio = THREE.MathUtils.clamp(opening / 0.25, 0.12, 1);
     const inRange = distance <= T.edgeShotDistance && opening >= T.shotMinOpening;
     const clearChance = distance < T.clearShotDistance && shotLane >= T.shotLaneThreshold && pressure > 1.7 && opening > 0.24;
-    const edgeChance = inRange && shotLane > 0.62;
     const quality = inRange
       ? THREE.MathUtils.clamp(1 - distance / (T.edgeShotDistance + 4), 0, 1) * (0.30 + 0.70 * shotLane) * windowRatio
       : 0;
+    // An edge-of-area shot needs a genuinely open lane AND real target quality.
+    // The old 0.62 lane gate with no quality threshold let speculative 12–15 m
+    // drives through repeatedly: measured matches showed 23 goal kicks and
+    // tackle→shoot→goal-kick cycles repeating every ~4 s in the same spot. The
+    // absolute opening floor rejects wide-angle attempts (26° off the goal axis
+    // at 13 m): their 15° target window is smaller than the aim-error spread, so
+    // they flew out for goal kicks every time — a cross is the right decision.
+    const edgeChance = inRange && shotLane >= T.shotLaneThreshold && quality > 0.24 && opening >= 0.27;
     const shotKey = `shoot:${Math.floor(distance / 4)}`;
     // Shot score: expected-goal quality (distance, lane, window) scaled by the
     // shooter's finishing style, minus block risk under pressure and fatigue.
@@ -810,7 +823,7 @@ export class AIController {
     // goal-kick loop (23 in one four-minute replay). Pay for the range instead.
     const rangeCost = THREE.MathUtils.clamp(
       (distance - T.clearShotDistance) / Math.max(1, T.edgeShotDistance - T.clearShotDistance), 0, 1,
-    ) * 0.30;
+    ) * 0.42;
     const shoot = inRange
       ? 0.26 - rangeCost + quality * 1.5 + (clearChance ? 0.45 : 0) + (edgeChance ? 0.18 : 0) + p.style.shooting * 0.07
         + ((p.attributes?.shooting.offensiveAwareness ?? 75) - 75) * 0.004
@@ -1041,8 +1054,13 @@ export class AIController {
         utilities, urgent: true };
     }
 
+    // Beyond clearShotDistance + 3 (12 m) only a genuine edge chance with an open
+    // lane and real target quality is taken; the old generic clause let any
+    // marginally-better shoot score fire from 12–15 m, feeding the goal-kick loop.
     if (shotId && inRange && shotLane > T.shotPartialLane
-      && (clearChance || (edgeChance && quality > 0.14) || shoot > Math.max(best?.score ?? -1, carry) + 0.04)) {
+      && (clearChance
+        || edgeChance
+        || (distance < T.clearShotDistance + 3 && shoot > Math.max(best?.score ?? -1, carry) + 0.10))) {
       return { moveTarget: p.pos.clone(), desiredSpeed: 0, action: shotId, actionTarget: aim, noveltyKey: shotKey,
         reason: `SHOOT ${clearChance ? "clear chance" : edgeChance ? "edge of area" : "partial lane"}: ${distance.toFixed(1)}m, lane ${shotLane.toFixed(2)}, window ${(opening * 180 / Math.PI).toFixed(0)}deg, quality ${quality.toFixed(2)} · ${runsOn}`,
         utilities, passOptions, urgent: true };
@@ -1198,6 +1216,70 @@ export class AIController {
     const ballSpeed = snap.ballVel.length();
     const shot = this.readShot(p, snap, ownGoal);
     if (shot) {
+      const goalHalf = CONFIG.pitch.goalWidth / 2 - CONFIG.ai.gkNearPostInset;
+      // A dive clip's root motion moves in facing space; pick the clip whose travel
+      // goes toward the ball's side of the goal.
+      const diveFor = (targetZ: number): string => {
+        const needDz = Math.sign(targetZ - p.pos.z) || 1;
+        const leftDz = -Math.cos(p.facing); // gk_dive_L moves dz=-3 in facing space
+        return Math.sign(leftDz) === needDz ? "gk_dive_L" : "gk_dive_R";
+      };
+      // ---- Penalty: a pre-kick guess, not a reaction -------------------------
+      // From 4.2 m the ball arrives in ~0.15 s — inside every human reaction time.
+      // A keeper therefore chooses a corner before the strike. Reading the true
+      // velocity here made him dive to the exact crossing point and save 77 % of
+      // penalties (real reference ~22 %). The guess drives the body; the physical
+      // save volume still has to reach the real ball afterwards.
+      const isPenaltyKick = snap.penaltyKickClock !== undefined && snap.time - snap.penaltyKickClock < 2.5;
+      if (isPenaltyKick) {
+        let guess = this.gkPenaltyGuess.get(p.idx);
+        if (!guess || snap.time - guess.clock > 2.5) {
+          const u = rng.next();
+          const side = u < CONFIG.ai.gkPenaltyStayPct ? 0 : (rng.next() < 0.5 ? -1 : 1);
+          // Commit depth varies too: a guess aimed at the far post does not cover
+          // a near-post lane, so even the right corner is not an automatic save.
+          const z = side === 0 ? 0 : side * CONFIG.ai.gkPenaltyGuessReach * (0.5 + 0.65 * rng.next());
+          guess = { clock: snap.time, z };
+          this.gkPenaltyGuess.set(p.idx, guess);
+        }
+        shot.z = guess.z;
+        shot.lateral = Math.abs(shot.z - p.pos.z);
+        shot.reachable = true;
+        const keeperTarget = new THREE.Vector3(p.pos.x, 0, THREE.MathUtils.clamp(shot.z, -goalHalf, goalHalf));
+        const action = shot.lateral < 0.5
+          ? (this.can(p, "gk_parry") ? "gk_parry" : null)
+          : (this.can(p, diveFor(shot.z)) ? diveFor(shot.z) : this.can(p, "gk_parry") ? "gk_parry" : null);
+        return {
+          moveTarget: keeperTarget, desiredSpeed: CONFIG.player.gkSprintSpeed,
+          action, actionTarget: new THREE.Vector3(p.pos.x, shot.height, shot.z),
+          noveltyKey: `penalty-save:${Math.round(shot.z)}`,
+          reason: `GK PENALTY guess ${shot.lateral < 0.5 ? "central" : shot.z > 0 ? "right" : "left"} · ${action ?? "hold"}`,
+          utilities: { save: 1, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach, penalty: 1 }, urgent: true,
+        };
+      }
+      // ---- Recovery: ball struck from behind the keeper's line --------------
+      // He had rushed out and the shot is travelling past him toward the goal.
+      // Sprint back to the goal-line crossing point and throw a dive if the body
+      // can still get there; standing idle (the old readShot null) was a certain goal.
+      if (shot.recovery) {
+        const recoveryTarget = new THREE.Vector3(ownGoal.x, 0, THREE.MathUtils.clamp(shot.z, -goalHalf, goalHalf));
+        let action: string | null = null;
+        if (!p.busy) {
+          if (shot.lateral < 0.75) action = this.can(p, "gk_parry") ? "gk_parry" : null;
+          else {
+            const dive = diveFor(shot.z);
+            action = this.can(p, dive) ? dive : this.can(p, "gk_parry") ? "gk_parry" : null;
+          }
+        }
+        return {
+          moveTarget: recoveryTarget, desiredSpeed: CONFIG.player.gkSprintSpeed,
+          action, actionTarget: new THREE.Vector3(ownGoal.x, shot.height, shot.z),
+          noveltyKey: `recover:${Math.round(shot.z)}`,
+          reason: `GK RECOVERY ${action ?? "sprint back"} · shot behind line, ${shot.timeLeft.toFixed(2)}s ${shot.reachable ? "reachable" : "desperate"}`,
+          utilities: { save: shot.reachable ? 1 : 0, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach, recovery: 1 },
+          urgent: true,
+        };
+      }
       // Per-shot read error, sampled ONCE per strike from the match PRNG (decision-time
       // variety; contact resolution stays deterministic). Faster and screened shots are
       // harder to read, so some reachable shots are still beaten.
@@ -1217,12 +1299,22 @@ export class AIController {
         // a good reader mis-judges the flight less.
         const reads = ((p.attributes?.intelligence.anticipation ?? 75) * 0.6
           + (p.attributes?.intelligence.focus ?? 75) * 0.4) / 100;
-        const err = rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty * (1.6 - reads);
+        // Capped: the uncapped error reached ±1.25 m at 34 m/s — wider than the
+        // goal mouth — which made the catch/parry/dive choice a coin flip even for
+        // balls clearly heading for a corner.
+        const err = THREE.MathUtils.clamp(
+          rng.range(-1, 1) * CONFIG.ai.gkReadError * difficulty * (1.6 - reads),
+          -CONFIG.ai.gkReadErrorMax, CONFIG.ai.gkReadErrorMax,
+        );
         // Dive timing error: negative = early, positive = late. Skewed late against pace.
         const timing = rng.range(-0.5, 1) * CONFIG.ai.gkTimingError * difficulty;
         this.gkRead.set(p.idx, { age, err, timing });
       } else prev.age = age;
       const read = this.gkRead.get(p.idx)!;
+      // The TRUE geometry decides the save clip: a wide ball needs a dive even if
+      // the noisy read pulls the crossing point toward the body. The errored read
+      // still moves the shuffle/dive target, which is where keeper mistakes live.
+      const trueLateral = Math.abs(shot.z - p.pos.z);
       shot.z += read.err;
       // The timing error belongs to the COMMIT, not to the flight. Adding it to
       // `timeLeft` (the old model) made the keeper believe a 0.36 s shot had 0.7 s
@@ -1233,7 +1325,6 @@ export class AIController {
       const commitLead = CONFIG.ai.gkDiveContactTime + CONFIG.ai.gkCommitAnticipation - read.timing;
       shot.lateral = Math.abs(shot.z - p.pos.z);
       shot.reachable = shot.lateral <= shot.reach;
-      const goalHalf = CONFIG.pitch.goalWidth / 2 - CONFIG.ai.gkNearPostInset;
       const keeperTarget = new THREE.Vector3(p.pos.x, 0, THREE.MathUtils.clamp(shot.z, -goalHalf, goalHalf));
       const util = { save: shot.reachable ? 1 : 0, lateral: shot.lateral, timeLeft: shot.timeLeft, reach: shot.reach };
       const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
@@ -1256,14 +1347,9 @@ export class AIController {
         const handling = p.attributes?.goalkeeping.handling ?? 75;
         const catching = p.attributes?.goalkeeping.catching ?? 75;
         const catchSpeed = CONFIG.ai.gkCatchSpeed * (0.5 + (handling + catching) / 300);
-        if (shot.lateral < 0.75 && shot.height < 1.75) action = ballSpeed < catchSpeed ? "gk_catch" : "gk_parry";
-        else if (shot.lateral < 0.75) action = "gk_parry";
-        else {
-          // Dive clip root motion is in facing space; pick the clip that moves toward the ball.
-          const needDz = Math.sign(shot.z - p.pos.z) || 1;
-          const leftDz = -Math.cos(p.facing); // gk_dive_L moves dz=-3 in facing space
-          action = Math.sign(leftDz) === needDz ? "gk_dive_L" : "gk_dive_R";
-        }
+        if (trueLateral < 0.75 && shot.height < 1.75) action = ballSpeed < catchSpeed ? "gk_catch" : "gk_parry";
+        else if (trueLateral < 0.75) action = "gk_parry";
+        else action = diveFor(shot.z);
         return {
           moveTarget: keeperTarget, desiredSpeed: CONFIG.player.gkSprintSpeed,
           action: this.can(p, action) ? action : this.can(p, "gk_parry") ? "gk_parry" : null,
@@ -1307,7 +1393,7 @@ export class AIController {
     if (dribbler && dribbler.team !== p.team && dribbler.role !== "GK") {
       const dribblerDepth = (ball.x - ownGoal.x) * atkSign;
       const smotherDist = d2(p.pos, ball);
-      if (dribblerDepth > 0 && dribblerDepth < 5.8 && Math.abs(ball.z) < 6.2
+      if (dribblerDepth > 0 && dribblerDepth < CONFIG.ai.gkSmotherDepth && Math.abs(ball.z) < CONFIG.ai.gkSmotherWidth
         && ball.y < CONFIG.ai.gkSmotherHeight + 0.4
         && smotherDist < CONFIG.ai.gkSmotherRush && (dribbler.tackleProtectionT ?? 0) <= 0) {
         const withHands = smotherDist < CONFIG.ai.gkSmotherRange + 0.6 && this.can(p, "gk_catch");
@@ -1356,7 +1442,7 @@ export class AIController {
     // keeper 0.6 m from the line, which made close-range scoring trivial.
     const dist = Math.hypot(ball.x - ownGoal.x, ball.z - ownGoal.z);
     const position = keeperPositionTarget(ball, ownGoal, atkSign);
-    if (ballSpeed < 8.5 && dist < 5.0 && ball.y < 1.35 && snap.ballOwnerTeam !== p.team) {
+    if (ballSpeed < 8.5 && dist < 4.0 && ball.y < 1.35 && snap.ballOwnerTeam !== p.team) {
       return {
         moveTarget: ball.clone().setY(0), desiredSpeed: Math.min(CONFIG.ai.maxSprint, 5.2),
         action: d2(p.pos, ball) < CONFIG.ai.catchRadius + 0.5 && this.can(p, "gk_catch") ? "gk_catch" : null,
@@ -1577,32 +1663,60 @@ export class AIController {
    */
   readShot(p: WorldPlayer, snap: WorldSnap, ownGoal: THREE.Vector3): {
     z: number; height: number; timeLeft: number; lateral: number; reach: number; reachable: boolean;
+    /** Ball was struck from behind the keeper's own x-line (he had rushed out). */
+    recovery: boolean;
   } | null {
     if (snap.ballOwner !== null) return null;
     const v = snap.ballVel, b = snap.ballPos;
     const towardGoal = (ownGoal.x - b.x) * v.x > 0;
     const horizontal = Math.hypot(v.x, v.z);
     if (!towardGoal || horizontal < 6) return null;
-    // Distance to the keeper's line along the direction of travel, then drag-aware time.
-    const lineX = p.pos.x;
-    const dxLine = lineX - b.x;
-    if (dxLine * v.x <= 0) return null; // ball already behind keeper's line
-    const along = Math.abs(dxLine) * (horizontal / Math.abs(v.x));
     const B = CONFIG.ball;
     const kDrag = 0.5 * B.airDensity * B.dragCoefficient * Math.PI * B.radius * B.radius / B.mass;
-    const t = (Math.exp(kDrag * along) - 1) / (kDrag * horizontal); // invert ln(1+k v t)/k = along
-    if (!Number.isFinite(t) || t > 2.5) return null;
-    const z = b.z + (v.z / horizontal) * along;
-    const height = Math.max(B.radius, b.y + v.y * t - 0.5 * B.gravity * t * t);
-    // Must be heading on target (with a small margin for late curl). Both tests
-    // are made where the ball crosses the GOAL line: height was previously read
-    // at the keeper's line, so a dipping lob that clears the keeper but drops
-    // under the bar was judged "over" and never attacked.
+    // Where/when the ball crosses the GOAL line, computed first so both the normal
+    // and the recovery ("ball already behind the keeper") paths share one on-target test.
     const alongGoal = Math.abs(ownGoal.x - b.x) * (horizontal / Math.abs(v.x));
     const goalZ = b.z + (v.z / horizontal) * alongGoal;
     const tGoal = (Math.exp(kDrag * alongGoal) - 1) / (kDrag * horizontal);
     const goalLineHeight = b.y + v.y * tGoal - 0.5 * B.gravity * tGoal * tGoal;
+    if (!Number.isFinite(tGoal) || tGoal > 2.5) return null;
+    // Must be heading on target (with a small margin for late curl). Both tests
+    // are made where the ball crosses the GOAL line: height was previously read
+    // at the keeper's line, so a dipping lob that clears the keeper but drops
+    // under the bar was judged "over" and never attacked.
     if (Math.abs(goalZ) > CONFIG.pitch.goalWidth / 2 + 0.45 || goalLineHeight > CONFIG.pitch.goalHeight + 0.4) return null;
+
+    // Distance to the keeper's line along the direction of travel, then drag-aware time.
+    const lineX = p.pos.x;
+    const dxLine = lineX - b.x;
+    if (dxLine * v.x <= 0) {
+      // The ball is travelling toward goal from BEHIND the keeper's body line:
+      // he had rushed out and the striker shot past him. The old code returned
+      // null here, so the keeper did not even recognise the shot and stood still
+      // while the ball rolled into the empty net. Read the goal-line crossing and
+      // let the decision layer command a desperate recovery run/dive.
+      const reflexes = p.attributes?.goalkeeping.reflexes ?? 75;
+      const reactionTime = CONFIG.ai.gkReactionTime * THREE.MathUtils.clamp(1.5 - reflexes / 150, 0.65, 1.25);
+      const usable = Math.max(0, tGoal - reactionTime);
+      const backDist = Math.hypot(ownGoal.x - p.pos.x, goalZ - p.pos.z);
+      const diving = p.attributes?.goalkeeping.diving ?? 75;
+      const diveExt = CONFIG.ai.gkDiveExtension * (0.5 + diving / 150) * THREE.MathUtils.clamp(usable / CONFIG.ai.gkDiveContactTime, 0, 1);
+      const reachable = backDist <= usable * CONFIG.player.gkSprintSpeed + diveExt + CONFIG.ai.gkStandingReach;
+      return {
+        z: goalZ,
+        height: Math.max(B.radius, goalLineHeight),
+        timeLeft: tGoal,
+        lateral: Math.abs(goalZ - p.pos.z),
+        reach: backDist,
+        reachable,
+        recovery: true,
+      };
+    }
+    const along = Math.abs(dxLine) * (horizontal / Math.abs(v.x));
+    const t = (Math.exp(kDrag * along) - 1) / (kDrag * horizontal); // invert ln(1+k v t)/k = along
+    if (!Number.isFinite(t) || t > 2.5) return null;
+    const z = b.z + (v.z / horizontal) * along;
+    const height = Math.max(B.radius, b.y + v.y * t - 0.5 * B.gravity * t * t);
 
     const lateral = Math.abs(z - p.pos.z);
     // Time the keeper can actually use: arrival time minus the unexpired reaction delay.
@@ -1621,7 +1735,17 @@ export class AIController {
     const heightPenalty = height > 1.85 ? 0.6 : height > 1.5 ? 0.35 : height < 0.25 ? 0.25 : 0;
     const reachRating = p.attributes?.goalkeeping.reach ?? 75;
     const reach = CONFIG.ai.gkStandingReach * (0.5 + reachRating / 150) + diveExt + shuffle - heightPenalty;
-    return { z, height, timeLeft: t, lateral, reach, reachable: lateral <= reach };
+    return { z, height, timeLeft: t, lateral, reach, reachable: lateral <= reach, recovery: false };
+  }
+
+  /**
+   * The keeper's active penalty guess (the goal-relative z he committed to), or
+   * null outside a penalty window. The physical save volume uses this so a dive
+   * the wrong way cannot magically stop the ball — the guess is the save.
+   */
+  penaltyGuessFor(idx: number, now: number): number | null {
+    const g = this.gkPenaltyGuess.get(idx);
+    return g && now - g.clock < 2.5 ? g.z : null;
   }
 
   isOffsidePosition(position: THREE.Vector3, ball: THREE.Vector3, team: number, snap: WorldSnap): boolean {
@@ -1683,7 +1807,7 @@ export class AIController {
     if (!carrier || carrier.team === p.team) return null;
     const sign = this.attackSign(p.team, snap.half);
     const depth = (snap.ballPos.x - ownGoal.x) * sign;
-    if (depth <= 0 || depth > CONFIG.ai.gkRushLine * 2 || Math.abs(snap.ballPos.z) >= 6.2) return null;
+    if (depth <= 0 || depth > CONFIG.ai.gkOneOnOneDepth || Math.abs(snap.ballPos.z) >= 6.2) return null;
     const covered = snap.players.some((q) => q.team === p.team && q.idx !== p.idx && q.role !== "GK"
       && (q.pos.x - ownGoal.x) * sign < depth - 0.5 && Math.abs(q.pos.z - snap.ballPos.z) < 4);
     return covered ? null : carrier;

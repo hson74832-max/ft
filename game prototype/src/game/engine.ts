@@ -118,6 +118,7 @@ export class MatchEngine {
   lastActionSeed: number | null = null;
   offsideCandidates = new Set<number>();
   offsideTeam: number | null = null;
+  penaltyKickClock = -999;
   lastKnownOwnerTeam: number | null = null;
   lastKnownOwnerIdx: number | null = null;
   // Possession timing: how long the carrier has had the ball, and the window in

@@ -132,6 +132,10 @@ export const CONFIG = {
     gkShuffleFactor: 0.3,      // fraction of sprint speed usable as set-feet lateral shuffle
     gkShuffleMax: 0.9,         // m — keepers set their feet rather than chase across goal
     gkReadError: 0.85,         // m — 1σ-ish lateral misread of a 20 m/s shot (scales with pace)
+    // The raw error at 34 m/s grew to ±1.25 m — wider than the goal mouth itself —
+    // which flipped dive/parry choices randomly. The error is a keeper's read of
+    // where the ball is going, not a teleport, so it is capped at a plausible miss.
+    gkReadErrorMax: 0.65,      // m — hard cap on the per-shot lateral read error
     gkTimingError: 0.16,       // s — dive mistiming scale for a 20 m/s shot (scales with pace/screen)
     /**
      * How far before the dive's contact frame the keeper leaves his feet. A dive
@@ -141,6 +145,18 @@ export const CONFIG = {
      * commitment (late reads commit late), which is where the uncertainty belongs.
      */
     gkCommitAnticipation: 0.10, // s — extra flight time the keeper needs before leaving his feet
+    // Penalty keeping is a GUESS: from 4.2 m the ball arrives in ~0.15 s, faster
+    // than any reaction, so the keeper must choose a corner before the strike. The
+    // old model read the true ball velocity on the strike frame and dived to the
+    // exact crossing point, saving 77 % of spot kicks (real reference ~22 %).
+    gkPenaltyStayPct: 0.22,    // fraction of penalties the keeper guesses central
+    gkPenaltyGuessReach: 1.25, // m — how far from centre a guessed dive commits to
+    // A correct corner guess still has to reach the ball. The dive covers this
+    // much of the goal mouth around the guessed point. Calibrated on 150 forced
+    // spot kicks: 0.22 m reproduces the real ~78 % conversion / ~22 % save
+    // reference (wider windows pushed saves past 40 % because the dive physics
+    // then cover nearly the whole side of the goal).
+    gkPenaltySaveReach: 0.22,  // m — lateral window a guessed dive actually covers
     gkCatchSpeed: 16,          // m/s — above this a clean contact becomes a parry
     gkSetShuffleSpeed: 2.0,    // m/s — lateral side-step while set for a shot
     gkOffBalancePenalty: 0.3,  // m of dive reach lost per m/s of lateral speed at contact
@@ -168,15 +184,28 @@ export const CONFIG = {
     // Aggressive hands at a dribbler's feet. A carrier who brings the ball inside
     // this range in the keeper's own box can be smothered (hands) rather than
     // tackled: the keeper commits the body, not a foot.
-    gkSmotherRush: 4.6,        // m — a dribbler this close to the keeper triggers the rush
+    // A 4.6 m trigger sent the keeper sprinting at dribblers who were still far
+    // from goal: he was regularly stranded 4 m off his line and the attacker simply
+    // rolled the shot past him into the empty net (the readShot recovery bug made
+    // those even worse — he did not even recognise the shot). Rush only at close
+    // range, inside the central part of the box.
+    gkSmotherRush: 3.2,        // m — a dribbler this close to the keeper triggers the rush
     gkSmotherRange: 1.55,      // m — ball distance at which the hands close on it
     gkSmotherHeight: 1.1,      // m — hands cannot claim a ball above this
+    gkSmotherDepth: 4.5,       // m — dribbler must be inside this depth from the line
+    gkSmotherWidth: 4.5,       // m — and inside this lateral distance from goal centre
+    // The 1v1 slide/rush used `gkRushLine * 2` (11 m) as its depth gate, so keepers
+    // committed to men near the edge of the box and got beaten before they arrived.
+    gkOneOnOneDepth: 7.0,      // m — only treat a carrier this close to goal as a 1v1
     // Angle/near-post positioning. `gkRushLine` is a hard safety bound; the
     // keeper normally occupies an arc closer to the goal line and only advances
     // into it when the ball is close enough to narrow the shooting angle.
     gkPositionBase: 0.72,      // m off the goal line at zero range
     gkPositionDepthFactor: 0.11, // m of advance per metre of ball distance
-    gkPositionMaxAdvance: 4.2, // m — never vacate the six-yard area while tracking
+    // 4.2 m of advance on a 40 m pitch put the keeper on the penalty-spot line at
+    // rest, leaving the whole goal exposed to a shot struck past him. The six-yard
+    // area is 2.1 m deep; 3.2 m keeps him in the box mouth instead of the spot.
+    gkPositionMaxAdvance: 3.2, // m — never vacate the six-yard area while tracking
     gkRushBonus: 1.3,          // extra advance against a close, central threat
     gkNearPostBias: 0.28,      // m — protect the near post on wide balls
     gkNearPostInset: 0.18,     // m — do not stand outside the post

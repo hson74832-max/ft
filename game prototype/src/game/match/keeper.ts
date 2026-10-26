@@ -15,6 +15,30 @@ import type { MatchHost } from "./host";
 /** How long after the limit the engine stops waiting for a delivery plan. */
 const FORCED_RELEASE_GRACE = 1.0;
 
+/**
+ * Penalty guess integrity. A spot kick arrives in ~0.15 s, faster than any
+ * reaction, so the keeper dives to a pre-kick GUESS. Both the hand save volume
+ * (`keeperSaveCheck`) and the body-cylinder deflection (`collisions`) must
+ * respect it, otherwise a wrong-way dive still stopped balls clipping the
+ * keeper's standing cylinder and spot-kick saves stayed near 50 % (real ~22 %).
+ * Returns true when the keeper's guess covers the ball's goal-line crossing.
+ */
+export function penaltyGuessCovers(e: MatchHost, gk: EnginePlayer, crossZ: number): boolean {
+  if (!(e.penaltyKickClock > -99 && e.clock - e.penaltyKickClock < 2.5)) return true;
+  const guess = e.ai.penaltyGuessFor(gk.idx, e.clock);
+  if (guess === null) return true;
+  if (Math.abs(guess) < 0.5) return Math.abs(crossZ) <= 0.55;
+  if (Math.sign(guess) !== Math.sign(crossZ) && Math.abs(crossZ) > 0.25) return false;
+  return Math.abs(crossZ - guess) <= CONFIG.ai.gkPenaltySaveReach;
+}
+
+/** Goal-line crossing z of a live ball heading at the given goal, for penalty gates. */
+export function ballCrossingZ(e: MatchHost, gk: EnginePlayer): number {
+  const own = e.ai.ownGoal(gk.team, e.rules.half);
+  const tLine = (own.x - e.ball.pos.x) / e.ball.vel.x;
+  return tLine > 0 ? e.ball.pos.z + e.ball.vel.z * tLine : e.ball.pos.z;
+}
+
 /** Long clearance the keeper strikes himself, bypassing the pass planner. */
 function directClearance(e: MatchHost, gk: EnginePlayer, target: THREE.Vector3, loft: number, power: number) {
   const dir = target.clone().sub(e.ball.pos).setY(0);
@@ -126,6 +150,13 @@ export function keeperSaveCheck(e: MatchHost): void {
     if (timeToLine > 0 && timeToLine < 1.2) {
       const zAtLine = cur.z + b.vel.z * timeToLine;
       if (Math.abs(zAtLine) > CONFIG.pitch.goalWidth / 2 + CONFIG.ai.gkSaveWideMargin) continue;
+    }
+    // Penalty integrity: the keeper committed to a pre-kick guess before the
+    // strike (he cannot react in ~0.15 s). A dive the wrong way cannot stop the
+    // ball; the same gate protects the body-cylinder deflection in collisions.
+    if (e.penaltyKickClock > -99 && e.clock - e.penaltyKickClock < 2.5
+      && !penaltyGuessCovers(e, gk, timeToLine > 0 ? cur.z + b.vel.z * timeToLine : cur.z)) {
+      continue;
     }
     const speed = b.speed;
     const handling = gk.attributes.goalkeeping.handling;
