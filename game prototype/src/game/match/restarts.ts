@@ -584,7 +584,13 @@ function sampleRestartTargetRaw(
   const goal = e.ai.goalPos(taker.team, e.rules.half);
   if (pr.kind === "penalty" || (pr.kind === "free_kick" && taker.pos.distanceTo(goal) < 13)) {
     const keeper = e.players.find((p) => p.team !== taker.team && p.role === "GK");
-    const lanes = [-1.05, -0.5, 0, 0.5, 1.05].map((z) => ({
+    // A penalty is aimed inside the post, not at the middle of the goal. The old
+    // lanes topped out 0.45 m inside a 1.5 m half-goal, so the keeper's standing
+    // reach covered them and 12 of 16 penalties were saved. The far lanes now sit
+    // 0.2 m inside the post, which is what a taker actually does with the keeper
+    // on his line.
+    const laneEdge = CONFIG.pitch.goalWidth / 2 - 0.2;
+    const lanes = [-laneEdge, -laneEdge * 0.55, 0, laneEdge * 0.55, laneEdge].map((z) => ({
       value: new THREE.Vector3(goal.x, 0, z),
       weight: 0.25 + Math.abs((keeper?.pos.z ?? 0) - z) * 0.55 + rng.range(0, 0.24),
     }));

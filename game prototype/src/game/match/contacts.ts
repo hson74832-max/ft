@@ -212,7 +212,15 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         : activeRestart?.kind === "free_kick" ? p.attributes.passing.freeKick
           : action === "shoot_volley" ? p.attributes.shooting.volleys
             : p.pos.distanceTo(tgt) > CONFIG.tactics.clearShotDistance ? p.attributes.shooting.longShots : p.attributes.shooting.finishing;
-      const shotError = CONFIG.ai.passError * (75 - shotRating) / 75
+      // Aiming error grows with the range it has to cover. The old term was
+      // `passError * (75 - rating) / 75`, which is range-independent and *shrinks* for
+      // a good finisher: an 80-rated forward put a 13–15 m drive inside half a degree,
+      // so every long shot was on target and the far corner was a free goal. Distance
+      // is now part of the error, and the finisher's rating scales it down rather than
+      // inverting it.
+      const shotSpread = (CONFIG.tactics.shotSpreadBase + p.pos.distanceTo(tgt) * CONFIG.tactics.shotSpreadPerMetre)
+        * THREE.MathUtils.clamp(1.45 - shotRating / 100, 0.55, 1.6);
+      const shotError = shotSpread
         * (tieBreakHash(e.matchSeed, p.idx, p.runSerial, `shot-accuracy:${action}:${activeRestart?.kind ?? "open"}`) * 2 - 1);
       const shotDirection = dirTo(tgt).applyAxisAngle(new THREE.Vector3(0, 1, 0), shotError);
       // Profile by situation, not by action name: a blocked lane gets the dipping
@@ -421,6 +429,9 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
           || smotherCarrier.tackleProtectionT > 0) break;
       }
       if (e.ball.handsRestrictedTeam === p.team) break;
+      // The sweep save model in ./keeper has already resolved this shot; the clip's
+      // contact frame must not touch the same ball a second time (double parry).
+      if (e.ball.kickedBy === p.idx) break;
       const diving = action === "gk_dive_L" || action === "gk_dive_R";
       // Hand reach at the contact frame. A dive's root motion has already displaced the
       // body, so its residual reach is the outstretched arm plus fingertips.

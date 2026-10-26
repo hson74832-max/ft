@@ -131,11 +131,35 @@ export const CONFIG = {
     gkDiveExtension: 1.4,      // additional lateral reach from a full dive (≈2.35 m total)
     gkShuffleFactor: 0.3,      // fraction of sprint speed usable as set-feet lateral shuffle
     gkShuffleMax: 0.9,         // m — keepers set their feet rather than chase across goal
-    gkReadError: 0.32,         // m — 1σ-ish lateral misread of a 20 m/s shot (scales with pace)
+    gkReadError: 0.85,         // m — 1σ-ish lateral misread of a 20 m/s shot (scales with pace)
     gkTimingError: 0.16,       // s — dive mistiming scale for a 20 m/s shot (scales with pace/screen)
+    /**
+     * How far before the dive's contact frame the keeper leaves his feet. A dive
+     * takes `gkDiveContactTime` to reach full extension, so a keeper who waits for
+     * the ball to arrive never gets there; he commits when the flight time left is
+     * the dive time plus this anticipation. The per-shot timing error moves this
+     * commitment (late reads commit late), which is where the uncertainty belongs.
+     */
+    gkCommitAnticipation: 0.10, // s — extra flight time the keeper needs before leaving his feet
     gkCatchSpeed: 16,          // m/s — above this a clean contact becomes a parry
     gkSetShuffleSpeed: 2.0,    // m/s — lateral side-step while set for a shot
     gkOffBalancePenalty: 0.3,  // m of dive reach lost per m/s of lateral speed at contact
+    // The save itself is resolved where the BALL crosses the keeper's reach, not on
+    // the save clip's contact frame: a 32 m/s shot from 13 m arrives in ~0.30 s while
+    // the dive clip reaches its contact frame at 0.44 s, so a clip-timed save could
+    // never touch any shot struck from outside ~8 m (every save in the match was a
+    // body-collision deflection). The keeper's hands now sweep a volume each frame:
+    // standing arm reach plus the dive extension he has actually completed.
+    gkSaveZoneDepth: 9.0,      // m — how far in front of his goal the hands sweep
+    gkSaveHeight: 2.35,        // m — a ball above this cannot be reached with the hands
+    gkReflexExtension: 0.30,   // m — extra reach of a parry/catch clip (no dive)
+    // Hands past the body during a dive. The dive clip's ROOT MOTION already carries
+    // the keeper ~1.3 m sideways by its contact frame (3 m/s for 0.44 s), so adding the
+    // full 1.4 m dive extension on top of the moved body double-counted the travel and
+    // made the keeper cover the whole 3 m goal. The volume is the hands only.
+    gkHandExtension: 1.00,     // m — glove reach beyond the body at full dive
+    gkSetReach: 0.60,          // m — a set keeper's arms at his sides (see keeperSaveCheck)
+    gkSaveWideMargin: 0.9,     // m — beyond the post a keeper does not "save" a wide ball
     // A keeper may not sit on the ball. Once the distribution clock runs out he
     // releases it himself — a long ball away — whatever the distribution choice was.
     gkHoldLimit: 8,            // s — hard cap from gathering the ball to releasing it
@@ -257,6 +281,13 @@ export const CONFIG = {
     clearShotDistance: 9.0,
     shotLaneThreshold: 0.72,
     shotMinOpening: 0.16,
+    // Shot spread. The generic `passError * (75 - rating) / 75` term SHRINKS as a
+    // rating rises and is independent of range, so an 80-rated forward put a 13–15 m
+    // drive inside ±0.5° — every long shot in the sample was on target. Shot error now
+    // grows with the distance it has to travel (aim error compounds over range), so a
+    // long-range strike is a real gamble instead of a free goal.
+    shotSpreadBase: 0.030,      // rad — minimum aiming spread of any shot
+    shotSpreadPerMetre: 0.0055, // rad of extra spread per metre of range
     returnPassWindow: 4.0,
     returnPassPenalty: 0.24,
     // ---- Attacking intent -------------------------------------------------

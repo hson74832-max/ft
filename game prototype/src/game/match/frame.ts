@@ -12,6 +12,7 @@ import { clampReleaseInsidePitch, onContact } from "./contacts";
 import { resolveBallPlayerCollisions } from "./collisions";
 import { outGoalCheck, possessionCheck, trackPossession } from "./possession";
 import { restartAuto, restartStallCheck } from "./restarts";
+import { keeperSaveCheck } from "./keeper";
 import { decayTackleTimers } from "./tackles";
 import { benchSpot, blueCardRemaining, isOffPitch, updateBlueCards } from "./referee";
 import { scanHeadYaw, updatePerception } from "./perception";
@@ -336,6 +337,10 @@ export function stepBall(e: MatchHost, dt: number, live: boolean) {
     e.ball.shadow.position.set(e.ball.pos.x, 0.021, e.ball.pos.z);
   } else if (currentOwner) e.ball.step(dt, currentOwner.pos, currentOwner.facing, currentOwner.vel);
   else e.ball.step(dt);
+  // Hands before bodies: the keeper's reach volume is resolved against the flight
+  // that just happened, before the goal-line check can rule the shot a goal. Body
+  // deflections still handle everything the hands cannot reach.
+  keeperSaveCheck(e);
   resolveBallPlayerCollisions(e);
 
   if (live) {

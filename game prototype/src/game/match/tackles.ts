@@ -222,7 +222,14 @@ export function evaluateTackle(e: MatchHost, p: EnginePlayer, action: TackleActi
   let outcome: TackleOutcome = "miss";
   if (ballFirst && score >= CONFIG.tackle.cleanScore) outcome = "clean";
   else if (ballFirst && score >= CONFIG.tackle.spillScore) outcome = "spill";
-  else if (heavyContact && !keeperCarrier && (mistimed || score < CONFIG.tackle.foulScore || blindside || late)) outcome = "foul";
+  // A foul "from behind" needs the challenge to have been committed from behind as
+  // well as arriving there. Judging the blind side purely on the contact frame gave
+  // the carrier a free kick for turning his back into a front-on challenge: 46 of 213
+  // challenges in a five-match replay were fouls, 43 of them "blindside", while most
+  // of those were committed from the front (commit dot +0.4 to +0.7). The referee
+  // already grades cards on the committed geometry; the whistle now agrees with it.
+  else if (heavyContact && !keeperCarrier
+    && (mistimed || score < CONFIG.tackle.foulScore || (blindside && blindsideCommitted) || late)) outcome = "foul";
 
   const reason = `q=${score.toFixed(2)} ${action} · ball ${ballDist.toFixed(2)}m/${reach.toFixed(2)}m`
     + ` · face ${facingDot.toFixed(2)} · front ${frontDot.toFixed(2)}`

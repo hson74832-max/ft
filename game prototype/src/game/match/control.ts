@@ -281,19 +281,17 @@ export function aiControl(e: MatchHost, p: EnginePlayer, dt: number, snap: World
       e.ai.nextThink.set(p.idx, e.clock + 0.1); // re-decide shortly; avoids RNG thrash every frame
     } else {
       const actionTarget = dec.action === "dribble_touch" ? undefined : (dec.actionTarget ?? dec.moveTarget).clone();
-      // The kick leaves in the direction the body faces. A player who is running
-      // has his torso locked to his stride, so a target outside the body's arc is
-      // struck only after he stops and pivots onto it (faceTarget is read by the
-      // facing pass in ./frame). A player who is already standing still turns into
-      // the wind-up itself — that is the visible turn before the ball leaves.
-      // A pivot is a STOP, not a slow run: a body that is still travelling keeps its
-      // facing locked to its velocity (./frame), so a player asked to turn while
-      // moving at >0.4 m/s can never satisfy the facing test — he would run at the
-      // touchline clamp forever with the kick queued. `kickTurnT` is the backstop:
-      // after this long the kick is struck with whatever angle he has.
+      // The kick leaves in the direction the body faces, so the body has to point at
+      // the target before the strike. The gate used to run only for a player already
+      // moving (`p.speed > 0.45`), which let a STATIONARY player shoot at a goal behind
+      // him: the AI's shot decision leaves him standing (`desiredSpeed = 0`), so his
+      // facing was never checked and a quarter of all shots were struck with the body
+      // more than 60° off the ball's departure line (3 of 58 over 120° — a shot "from
+      // behind"). A standing player now pivots on the spot first, exactly like a runner,
+      // with `kickTurnT` as the backstop so a body pinned somewhere can still strike.
       const pivoting = p.faceTarget !== null;
       if (dec.action && isKickAction(dec.action) && actionTarget && !p.restartTaker
-        && p.speed > 0.45 && p.kickTurnT < CONFIG.ai.kickTurnLimit
+        && p.kickTurnT < CONFIG.ai.kickTurnLimit
         && kickFacingError(p, actionTarget) > CONFIG.ai.kickFacingAngle) {
         p.kickTurnT += Math.max(dt, 1 / 120);
         p.faceTarget = actionTarget.clone();
