@@ -103,6 +103,13 @@ export function stepPlayers(e: MatchHost, dt: number, snap: WorldSnap, live: boo
     // Clear stale kick intents once the animation that owned them has finished.
     if (p.pendingKick && !p.anim.busy) p.pendingKick = null;
     if (p.tackleChallenge && p.anim.actionId !== p.tackleChallenge.action) p.tackleChallenge = null;
+    // Deferred get_up: a failed slide tackle marks this flag at the contact frame;
+    // the get_up clip is only triggered once the slide animation naturally ends,
+    // so the player doesn't snap upright mid-slide.
+    if (p.pendingGetUp && !p.anim.busy) {
+      startAction(e, p, "get_up");
+      p.pendingGetUp = false;
+    }
     const restartHold = live && e.rules.pendingRestart !== null
       && e.restartLaunchedId !== e.rules.pendingRestart.id;
     const isHumanControlled = !e.spectator && p.idx === e.humanIdx && live && !restartHold;

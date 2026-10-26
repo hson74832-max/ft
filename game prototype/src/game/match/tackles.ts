@@ -102,6 +102,7 @@ export function resetTackleState(p: EnginePlayer): void {
   p.tackleRecoveryT = 0;
   p.tackleProtectionT = 0;
   p.tackleChallenge = null;
+  p.pendingGetUp = false;
 }
 
 export function carrierIsProtected(e: MatchHost): boolean {

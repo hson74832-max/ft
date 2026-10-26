@@ -336,11 +336,19 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
           // became a free kick and no penalty could ever be awarded.
           const attackGoal = e.ai.goalPos(carrier.team, e.rules.half);
           const inBox = Math.abs(carrier.pos.x - attackGoal.x) < 5.5 && Math.abs(carrier.pos.z) < 6.2;
-          e.ball.pos.set(carrier.pos.x, CONFIG.ball.radius, carrier.pos.z);
+          // Penalty kicks are taken from the penalty spot, not the foul position.
+          // The penalty spot is 4.2 m from the goal line on the scaled 40 m pitch
+          // (real law: 11 m on a 105 m pitch → 11/105 × 40 ≈ 4.2).
+          const penaltySpotDist = CONFIG.pitch.penaltySpotDist;
+          const atkSign = e.ai.attackSign(carrier.team, e.rules.half);
+          const restartPos: [number, number] = inBox
+            ? [attackGoal.x - atkSign * penaltySpotDist, 0]
+            : [carrier.pos.x, carrier.pos.z];
+          e.ball.pos.set(restartPos[0], CONFIG.ball.radius, restartPos[1]);
           e.ball.vel.set(0, 0, 0);
           e.ball.release();
           e.offsideCandidates.clear(); e.offsideTeam = null;
-          e.rules.startSetup(inBox ? "penalty" : "free_kick", [carrier.pos.x, carrier.pos.z], carrier.team);
+          e.rules.startSetup(inBox ? "penalty" : "free_kick", restartPos, carrier.team);
         } else {
           // Fouls may be disabled for a no-whistle prototype, but the bad
           // challenge is still punished: no possession, recovery and a stumble.
@@ -355,7 +363,11 @@ export function onContact(e: MatchHost, p: EnginePlayer, action: string) {
         if (quality.heavyContact && carrier) carrier.stumbleT = Math.max(carrier.stumbleT, 0.2);
         e.rules.emit("TACKLE", `${p.team === 0 ? "RED" : "BLUE"} missed tackle (${action}) · q ${quality.score.toFixed(2)}`, p.team);
       }
-      if (action === "tackle_slide" && tackleOutcome !== "clean") p.anim.requestAction("get_up", true);
+      // A failed slide tackle queues a get_up only after the slide clip completes.
+      // Requesting get_up at the contact frame (0.475 s into the 0.95 s clip) forced
+      // the slide animation to cut short, snapping the player upright mid-slide.
+      // Instead, stamp a deferred flag that the frame loop triggers when the clip ends.
+      if (action === "tackle_slide" && tackleOutcome !== "clean") p.pendingGetUp = true;
       p.decisionReason = `TACKLE ${tackleOutcome?.toUpperCase()} · ${quality.reason}`;
       break;
     }
